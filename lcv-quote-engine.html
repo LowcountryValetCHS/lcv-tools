@@ -278,17 +278,17 @@ const CHS_HUB={lat:32.8986,lng:-80.0405};
 // Verified against aviation sources (FltPlan/FlightAware/AirNav). Precise coords where an address was found.
 const AIRPORTS={
   // CHS — Charleston International
-  chs_main:{name:'CHS — Main Terminal',lat:32.8986,lng:-80.0405},
-  chs_signature:{name:'CHS — Signature FBO',lat:32.8845,lng:-80.0330},
-  chs_atlantic:{name:'CHS — Atlantic Aviation FBO',lat:32.8862,lng:-80.0305},
-  // JZI — Charleston Executive (Johns Island) — sole FBO Atlantic, 3050 Transatlantic Way
-  jzi_atlantic:{name:'JZI Charleston Exec — Atlantic Aviation',lat:32.7011,lng:-80.0028},
-  // LRO — Mt Pleasant Regional / Faison Field — sole FBO (Charleston County Aviation Authority), 700 Faison Rd
-  lro_main:{name:'LRO Mt Pleasant Regional — Faison Field FBO',lat:32.8978,lng:-79.7829},
+  chs_main:{name:'CHS — Main Terminal',addr:'5500 International Blvd, North Charleston, SC 29418',lat:32.8986,lng:-80.0405},
+  chs_signature:{name:'CHS — Signature FBO',addr:'5875 S Aviation Ave, North Charleston, SC 29406',lat:32.8845,lng:-80.0330},
+  chs_atlantic:{name:'CHS — Atlantic Aviation FBO',addr:'6060 S Aviation Ave, North Charleston, SC 29406',lat:32.8862,lng:-80.0305},
+  // JZI — Charleston Executive (Johns Island) — sole FBO Atlantic
+  jzi_atlantic:{name:'JZI Charleston Exec — Atlantic Aviation',addr:'3050 Transatlantic Way, Johns Island, SC 29455',lat:32.7011,lng:-80.0028},
+  // LRO — Mt Pleasant Regional / Faison Field
+  lro_main:{name:'LRO Mt Pleasant Regional — Faison Field FBO',addr:'700 Faison Rd, Mount Pleasant, SC 29464',lat:32.8978,lng:-79.7829},
   // SAV — Savannah/Hilton Head International
-  sav_main:{name:'SAV — Main Terminal',lat:32.1276,lng:-81.2021},
-  sav_sheltair:{name:'SAV — Sheltair FBO',lat:32.1262,lng:-81.1985},
-  sav_signature:{name:'SAV — Signature FBO',lat:32.1295,lng:-81.2055}
+  sav_main:{name:'SAV — Main Terminal',addr:'400 Airways Ave, Savannah, GA 31408',lat:32.1276,lng:-81.2021},
+  sav_sheltair:{name:'SAV — Sheltair FBO',addr:'100 Eddie Jungemann Dr, Savannah, GA 31408',lat:32.1262,lng:-81.1985},
+  sav_signature:{name:'SAV — Signature FBO',addr:'42 Airways Ave, Savannah, GA 31408',lat:32.1295,lng:-81.2055}
 };
 const AREAS={
   none:{name:'— not set —'},
@@ -298,19 +298,41 @@ const AREAS={
   wa:{name:'West Ashley',lat:32.7993,lng:-80.0118},
   kiawah:{name:'Kiawah corridor',lat:32.6087,lng:-80.0850},
   beaches:{name:'Beaches/IOP',lat:32.7866,lng:-79.7726},
-  lowndes:{name:'Lowndes Grove',lat:32.7967,lng:-79.9637},
-  magnolia:{name:'Magnolia Plantation',lat:32.8780,lng:-80.0876},
-  boone:{name:'Boone Hall',lat:32.8444,lng:-79.8113},
-  sanctuary:{name:'Sanctuary (Kiawah)',lat:32.6045,lng:-80.0889},
-  oceancourse:{name:'Ocean Course',lat:32.6068,lng:-80.0469},
-  dunlin:{name:'The Dunlin',lat:32.5790,lng:-80.1730}
+  lowndes:{name:'Lowndes Grove',addr:'266 St Margaret St, Charleston, SC 29403',lat:32.7967,lng:-79.9637},
+  magnolia:{name:'Magnolia Plantation',addr:'3550 Ashley River Rd, Charleston, SC 29414',lat:32.8780,lng:-80.0876},
+  boone:{name:'Boone Hall',addr:'1235 Long Point Rd, Mount Pleasant, SC 29464',lat:32.8444,lng:-79.8113},
+  sanctuary:{name:'Sanctuary (Kiawah)',addr:'1 Sanctuary Beach Dr, Kiawah Island, SC 29455',lat:32.6045,lng:-80.0889},
+  oceancourse:{name:'Ocean Course',addr:'1000 Ocean Course Dr, Kiawah Island, SC 29455',lat:32.6068,lng:-80.0469},
+  dunlin:{name:'The Dunlin',addr:'40 Jenkins Point Rd, Johns Island, SC 29455',lat:32.5790,lng:-80.1730}
 };
 const driveCache={};
 function mapsReady(){ return typeof MAPS_KEY==='string' && MAPS_KEY.trim().length>10; }
 function locOptsEng(sel){ return Object.keys(AREAS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AREAS[k].name+'</option>').join(''); }
 function airportOpts(sel){ return Object.keys(AIRPORTS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AIRPORTS[k].name+'</option>').join(''); }
-// resolve a dropdown value to a coordinate from either set
+// resolve a dropdown value to a location object from either set
 function resolveLoc(key){ if(AIRPORTS[key]) return AIRPORTS[key]; if(AREAS[key]&&AREAS[key].lat!=null) return AREAS[key]; return null; }
+
+// Geocode a location's street address to Google's exact point (cached). Falls back to stored lat/lng.
+const geoCache={};
+async function geocodeLoc(loc){
+  if(!loc) return null;
+  if(!loc.addr) return {lat:loc.lat,lng:loc.lng,exact:false}; // broad area — no precise address
+  if(geoCache[loc.addr]) return geoCache[loc.addr];
+  try{
+    const url="https://maps.googleapis.com/maps/api/geocode/json?address="+encodeURIComponent(loc.addr)+"&key="+encodeURIComponent(MAPS_KEY);
+    const res=await fetch(url);
+    if(!res.ok) throw new Error("geocode "+res.status);
+    const data=await res.json();
+    if(data.status!=='OK'||!data.results||!data.results[0]) throw new Error("geocode "+data.status);
+    const p=data.results[0].geometry.location; // {lat,lng}
+    const out={lat:p.lat,lng:p.lng,exact:true};
+    geoCache[loc.addr]=out;
+    return out;
+  }catch(e){
+    // fall back to the stored approximate coordinate so a quote still works
+    return {lat:loc.lat,lng:loc.lng,exact:false};
+  }
+}
 // re-populate the from/to selects based on trip direction
 function syncLocPickers(){
   const trip=$('trip').value;
@@ -384,17 +406,22 @@ async function refreshLiveTimesEng(){
   const fromKey=$('fromLocE').value, toKey=$('toLocE').value;
   if(btn) btn.disabled=true; if(status) status.textContent='Fetching live drive times…';
   try{
-    const from=resolveLoc(fromKey), to=resolveLoc(toKey);
-    if(!from||!to){
+    const fromLoc=resolveLoc(fromKey), toLoc=resolveLoc(toKey);
+    if(!fromLoc||!toLoc){
       if(trip==='fromairport') throw new Error("pick the airport and the destination area");
       else if(trip==='toairport') throw new Error("pick the pickup area and the airport");
       else throw new Error("pick both pickup and dropoff areas");
     }
+    // resolve each endpoint to Google's exact point via geocoding (cached); falls back to stored coords
+    if(status) status.textContent='Resolving exact locations…';
+    const [from,to]=await Promise.all([geocodeLoc(fromLoc),geocodeLoc(toLoc)]);
+    if(status) status.textContent='Fetching live drive times…';
     const dep=deptISOeng();
     const pair=await fetchLegPair(from,to,dep.iso);
     $('driveStd').value=pair.std; $('driveBusy').value=pair.busy;
     const spread = pair.busy-pair.std;
-    let msg='<span style="color:#2f7d50">✓ Live: std '+pair.std+' / busy '+pair.busy+' min'+(spread<=1?' (light, stable route)':' (±'+spread+' min traffic range)')+'.</span>';
+    const exactNote = (from.exact||to.exact) ? '' : ' (approx. locations)';
+    let msg='<span style="color:#2f7d50">✓ Live: std '+pair.std+' / busy '+pair.busy+' min'+(spread<=1?' (light, stable route)':' (±'+spread+' min traffic range)')+exactNote+'.</span>';
     if(dep.past) msg='<span style="color:#8a6d39">⚠ That date/time is in the past, so this used current traffic, not the booked time. Set a future date/time for predictive traffic. (std '+pair.std+' / busy '+pair.busy+')</span>';
     if(status) status.innerHTML=msg;
     calc();
