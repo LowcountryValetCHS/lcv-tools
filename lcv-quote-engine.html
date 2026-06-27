@@ -35,6 +35,13 @@
   .livebtn:disabled{opacity:.55;cursor:wait;}
   .live-status{font-size:12px;line-height:1.4;}
   .autotag{font-size:10px;font-weight:600;color:var(--brass-deep);text-transform:none;letter-spacing:0;}
+  .loc-mode{display:inline-flex;gap:0;margin-bottom:5px;border:1px solid var(--line);border-radius:4px;overflow:hidden;}
+  .modebtn{background:#fff;border:none;padding:3px 11px;font-size:11px;cursor:pointer;font-family:inherit;color:var(--ink-soft);}
+  .modebtn.on{background:var(--marsh);color:#fff;}
+  .addr-wrap{margin-top:2px;}
+  .addr-wrap gmp-place-autocomplete{width:100%;}
+  .route-map-wrap{margin:10px 0;border:1px solid var(--line);border-radius:6px;overflow:hidden;}
+  .route-map{width:100%;height:auto;display:block;}
   .hidden{display:none!important;}
   .check{display:flex;align-items:center;gap:8px;margin-top:10px;}
   .check input{width:auto;}
@@ -119,12 +126,16 @@
         <div class="stage-label">Stage 4 — Time</div>
         <div class="row2" id="locRowE">
           <div>
-            <label id="fromLocLabel">Pickup / from (area)</label>
+            <label id="fromLocLabel">Pickup / from</label>
+            <div class="loc-mode"><button type="button" class="modebtn on" data-side="from" data-mode="area">Area</button><button type="button" class="modebtn" data-side="from" data-mode="addr">Address</button></div>
             <select id="fromLocE"></select>
+            <div id="fromAddrWrap" class="addr-wrap" style="display:none;"></div>
           </div>
           <div>
-            <label id="toLocLabel">Dropoff / to (area)</label>
+            <label id="toLocLabel">Dropoff / to</label>
+            <div class="loc-mode"><button type="button" class="modebtn on" data-side="to" data-mode="area">Area</button><button type="button" class="modebtn" data-side="to" data-mode="addr">Address</button></div>
             <select id="toLocE"></select>
+            <div id="toAddrWrap" class="addr-wrap" style="display:none;"></div>
           </div>
         </div>
         <div class="row2">
@@ -141,6 +152,7 @@
           <button class="livebtn" id="liveBtnE" type="button">&#9737; Get live drive times</button>
           <span class="live-status" id="liveStatusE"></span>
         </div>
+        <div id="routeMapWrap" class="route-map-wrap" style="display:none;"><img id="routeMapImg" class="route-map" alt="Route map"></div>
         <div class="row2">
           <div>
             <label>Drive time each way — standard (min)</label>
@@ -307,6 +319,48 @@ const AREAS={
 };
 const driveCache={};
 function mapsReady(){ return typeof MAPS_KEY==='string' && MAPS_KEY.trim().length>10; }
+
+// ---- Places Autocomplete (Maps JavaScript API) ----
+// Holds the agent's chosen address coordinates per side; null until a place is selected.
+const addrSel={from:null,to:null};
+const locMode={from:'area',to:'area'};
+let mapsLibLoaded=false, mapsLibLoading=false;
+// Lowcountry bias so suggestions favor the service area
+const LCV_BIAS={north:33.05,south:31.95,east:-79.30,west:-81.40};
+function loadMapsLib(){
+  if(mapsLibLoaded||mapsLibLoading) return;
+  if(!mapsReady()) return;
+  mapsLibLoading=true;
+  // Google's inline bootstrap loader
+  (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.${c}apis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({key:MAPS_KEY,v:"weekly"});
+  initAutocomplete();
+}
+async function initAutocomplete(){
+  try{
+    const {PlaceAutocompleteElement}=await google.maps.importLibrary("places");
+    ['from','to'].forEach(side=>{
+      const wrap=document.getElementById(side+'AddrWrap');
+      if(!wrap||wrap.dataset.init) return;
+      const ac=new PlaceAutocompleteElement({locationBias:LCV_BIAS});
+      ac.id=side+'Autocomplete';
+      wrap.appendChild(ac);
+      wrap.dataset.init='1';
+      ac.addEventListener('gmp-select', async ({placePrediction})=>{
+        try{
+          const place=placePrediction.toPlace();
+          await place.fetchFields({fields:['location','formattedAddress','displayName']});
+          const loc=place.location;
+          addrSel[side]={lat:loc.lat(),lng:loc.lng(),exact:true,label:place.displayName||place.formattedAddress};
+          const st=$('liveStatusE'); if(st) st.innerHTML='<span style="color:#2f7d50">Selected '+(place.displayName||place.formattedAddress)+'. Click “Get live drive times.”</span>';
+        }catch(e){ console.warn('place fetch failed',e); }
+      });
+    });
+    mapsLibLoaded=true;
+  }catch(e){
+    mapsLibLoading=false;
+    const st=$('liveStatusE'); if(st) st.innerHTML='<span style="color:#b3402a">Address autocomplete failed to load ('+e.message+'). Use Area mode or check the Maps JavaScript API on your key.</span>';
+  }
+}
 function locOptsEng(sel){ return Object.keys(AREAS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AREAS[k].name+'</option>').join(''); }
 function airportOpts(sel){ return Object.keys(AIRPORTS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AIRPORTS[k].name+'</option>').join(''); }
 // resolve a dropdown value to a location object from either set
@@ -381,19 +435,39 @@ async function fetchLegPair(from,to,departISO){
       ...(departISO?{departureTime:departISO}:{})};
     const res=await fetch("https://routes.googleapis.com/directions/v2:computeRoutes",{
       method:"POST",
-      headers:{"Content-Type":"application/json","X-Goog-Api-Key":MAPS_KEY,"X-Goog-FieldMask":"routes.duration"},
+      headers:{"Content-Type":"application/json","X-Goog-Api-Key":MAPS_KEY,"X-Goog-FieldMask":"routes.duration,routes.polyline.encodedPolyline"},
       body:JSON.stringify(body)});
     if(!res.ok){ let m=''; try{const e=await res.json(); m=e.error&&e.error.message?(' — '+e.error.message):'';}catch(_){} throw new Error("Routes API "+res.status+m); }
     const data=await res.json();
-    const secs=data.routes&&data.routes[0]&&data.routes[0].duration?parseInt(data.routes[0].duration):null;
+    const r=data.routes&&data.routes[0];
+    const secs=r&&r.duration?parseInt(r.duration):null;
     if(secs==null) throw new Error("no route");
-    return Math.round(secs/60);
+    const poly=r.polyline&&r.polyline.encodedPolyline?r.polyline.encodedPolyline:null;
+    return {mins:Math.round(secs/60), poly};
   }
   const optimistic=await one("OPTIMISTIC");
   const pessimistic=await one("PESSIMISTIC");
-  const out={std:Math.min(optimistic,pessimistic), busy:Math.max(optimistic,pessimistic)};
+  const out={std:Math.min(optimistic.mins,pessimistic.mins), busy:Math.max(optimistic.mins,pessimistic.mins), poly:optimistic.poly};
   driveCache[ck]=out;
   return out;
+}
+
+// Build a Google Static Maps URL drawing the real route between two points (encoded polyline) with pins.
+function staticRouteURL(from,to,encodedPoly){
+  const base="https://maps.googleapis.com/maps/api/staticmap";
+  const params=[
+    "size=600x300","scale=2",
+    "markers=color:0x2f5d50%7Clabel:A%7C"+from.lat+","+from.lng,
+    "markers=color:0x8a6d39%7Clabel:B%7C"+to.lat+","+to.lng
+  ];
+  if(encodedPoly){
+    // enc: prefix draws an encoded polyline; weight/color style the line
+    params.push("path=weight:4%7Ccolor:0x2f5d50ff%7Cenc:"+encodeURIComponent(encodedPoly));
+  } else {
+    params.push("path=weight:3%7Ccolor:0x8a6d39aa%7C"+from.lat+","+from.lng+"%7C"+to.lat+","+to.lng);
+  }
+  params.push("key="+encodeURIComponent(MAPS_KEY));
+  return base+"?"+params.join("&");
 }
 
 // Compute the priced leg for the current trip and fill driveStd / driveBusy.
@@ -403,18 +477,25 @@ async function refreshLiveTimesEng(){
   const trip=$('trip').value;
   if(trip==='otr'||trip==='hourly'){ if(status) status.innerHTML='<span style="color:#8a6d39">Live times apply to airport & P2P. Hourly hours come from the planner; OTR is priced on day rates.</span>'; return; }
   if(!$('svcDateE').value){ if(status) status.innerHTML='<span style="color:#b3402a">Set a service date first.</span>'; return; }
-  const fromKey=$('fromLocE').value, toKey=$('toLocE').value;
   if(btn) btn.disabled=true; if(status) status.textContent='Fetching live drive times…';
   try{
-    const fromLoc=resolveLoc(fromKey), toLoc=resolveLoc(toKey);
-    if(!fromLoc||!toLoc){
-      if(trip==='fromairport') throw new Error("pick the airport and the destination area");
-      else if(trip==='toairport') throw new Error("pick the pickup area and the airport");
-      else throw new Error("pick both pickup and dropoff areas");
+    // resolve each side: address-mode uses the chosen place; area-mode uses the dropdown (geocoded)
+    async function resolveSide(side){
+      if(locMode[side]==='addr'){
+        if(addrSel[side]) return addrSel[side];
+        throw new Error("type and pick an address for the "+(side==='from'?'pickup':'dropoff'));
+      }
+      const key=$(side+'LocE').value;
+      const loc=resolveLoc(key);
+      if(!loc){
+        if(trip==='fromairport') throw new Error(side==='from'?"pick the airport":"pick the destination area");
+        if(trip==='toairport') throw new Error(side==='from'?"pick the pickup area":"pick the airport");
+        throw new Error("pick both pickup and dropoff areas");
+      }
+      return await geocodeLoc(loc);
     }
-    // resolve each endpoint to Google's exact point via geocoding (cached); falls back to stored coords
     if(status) status.textContent='Resolving exact locations…';
-    const [from,to]=await Promise.all([geocodeLoc(fromLoc),geocodeLoc(toLoc)]);
+    const [from,to]=await Promise.all([resolveSide('from'),resolveSide('to')]);
     if(status) status.textContent='Fetching live drive times…';
     const dep=deptISOeng();
     const pair=await fetchLegPair(from,to,dep.iso);
@@ -424,6 +505,15 @@ async function refreshLiveTimesEng(){
     let msg='<span style="color:#2f7d50">✓ Live: std '+pair.std+' / busy '+pair.busy+' min'+(spread<=1?' (light, stable route)':' (±'+spread+' min traffic range)')+exactNote+'.</span>';
     if(dep.past) msg='<span style="color:#8a6d39">⚠ That date/time is in the past, so this used current traffic, not the booked time. Set a future date/time for predictive traffic. (std '+pair.std+' / busy '+pair.busy+')</span>';
     if(status) status.innerHTML=msg;
+    // render the static route map
+    try{
+      const img=$('routeMapImg'), wrap=$('routeMapWrap');
+      if(img&&wrap){
+        img.onerror=()=>{ wrap.style.display='none'; };
+        img.onload=()=>{ wrap.style.display='block'; };
+        img.src=staticRouteURL(from,to,pair.poly);
+      }
+    }catch(_){}
     calc();
   }catch(err){
     if(status) status.innerHTML='<span style="color:#b3402a">Live lookup failed ('+err.message+'). Enter times manually.</span>';
@@ -696,6 +786,17 @@ function finish(html,trace,flags){
 
 // populate engine location pickers + wire live button
 if($('liveBtnE')){ $('liveBtnE').onclick=refreshLiveTimesEng; }
+// area/address mode toggle per side
+document.querySelectorAll('.modebtn').forEach(b=>{
+  b.onclick=()=>{
+    const side=b.dataset.side, mode=b.dataset.mode;
+    locMode[side]=mode;
+    document.querySelectorAll('.modebtn[data-side="'+side+'"]').forEach(x=>x.classList.toggle('on',x.dataset.mode===mode));
+    $(side+'LocE').style.display = mode==='area'?'block':'none';
+    $(side+'AddrWrap').style.display = mode==='addr'?'block':'none';
+    if(mode==='addr'){ loadMapsLib(); }
+  };
+});
 // show the location row for airport (both directions) and P2P; populate pickers directionally
 function syncLocRow(){ const t=$('trip').value; const show=(t==='fromairport'||t==='toairport'||t==='p2p'); if($('locRowE')) $('locRowE').style.display=show?'grid':'none'; syncLocPickers(); }
 $('trip').addEventListener('change',syncLocRow); syncLocRow();
