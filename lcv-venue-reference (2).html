@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lowcountry Valet — Venue Travel-Time Reference</title>
+<style>
+  :root{--ink:#1a2e2a;--ink-soft:#41524d;--paper:#f6f3ec;--card:#fffdf8;--line:#d9d2c4;--brass:#b08d4f;--brass-deep:#8a6d39;--marsh:#2f5d50;--marsh-light:#e4ede9;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:Georgia,'Times New Roman',serif;background:var(--paper);color:var(--ink);line-height:1.5;padding:26px 18px 60px;}
+  .wrap{max-width:860px;margin:0 auto;}
+  header{border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:20px;}
+  .eyebrow{font-family:'Helvetica Neue',Arial,sans-serif;text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--brass-deep);font-weight:700;}
+  h1{font-size:27px;font-weight:400;margin-top:6px;}
+  .sub{font-size:13.5px;color:var(--ink-soft);margin-top:7px;font-style:italic;}
+  .search{margin:18px 0;}
+  input[type=text]{width:100%;padding:11px 14px;font-family:'Helvetica Neue',Arial,sans-serif;font-size:15px;border:1px solid var(--line);border-radius:4px;background:#fff;}
+  input:focus{outline:2px solid var(--brass);outline-offset:-1px;}
+  table{border-collapse:collapse;width:100%;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13.5px;margin-top:6px;}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;}
+  th{background:var(--marsh);color:#fff;font-weight:600;cursor:pointer;user-select:none;font-size:12.5px;letter-spacing:.04em;}
+  th:hover{background:var(--brass-deep);}
+  td.num{text-align:center;font-variant-numeric:tabular-nums;}
+  tr:nth-child(even){background:var(--marsh-light);}
+  tr.hidden{display:none;}
+  .region{font-weight:700;color:var(--marsh);}
+  .verify{color:var(--brass-deep);font-size:11px;font-style:italic;}
+  .deadhead{font-weight:700;}
+  .note{font-size:12px;color:var(--ink-soft);font-style:italic;margin-top:16px;line-height:1.6;border-left:2px solid var(--brass);padding-left:12px;}
+  .legend{font-family:'Helvetica Neue',Arial,sans-serif;font-size:12px;color:var(--ink-soft);margin-top:10px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Lowcountry Valet · Coordinator Reference</div>
+    <h1>Venue Travel-Time Reference</h1>
+    <p class="sub">Pre-calculated one-way drive times from CHS and the resulting billable dead-head (after the 15-min-per-leg waiver, round trip). Use for fast quoting; confirm with live traffic for the actual booking time.</p>
+  </header>
+
+  <div class="search">
+    <input type="text" id="search" placeholder="Type to filter venues… (e.g. Kiawah, downtown, Magnolia)">
+  </div>
+
+  <table id="venueTable">
+    <thead>
+      <tr>
+        <th data-sort="name">Venue ▾</th>
+        <th data-sort="region">Area</th>
+        <th data-sort="oneway" class="num">One-way (min)</th>
+        <th data-sort="deadhead" class="num">Billable dead-head (hrs)</th>
+        <th data-sort="hwy" class="num">Bus route</th>
+      </tr>
+    </thead>
+    <tbody id="venueBody"></tbody>
+  </table>
+
+  <div class="legend">Billable dead-head = round trip, minus 15 min waived per leg, expressed in hours. A venue ≤15 min each way contributes ~0 billable dead-head.</div>
+
+  <p class="note">Drive times are typical-condition CAR estimates from CHS. <b>For buses, apply the time adjustments</b>: standard bus ×1.15 on drive legs; vintage bus ×1.25 on highway routes (flagged "Hwy") or ×1.15 in-city; +10 min per stop; +15 min if a downtown/historic pickup or dropoff is involved. The Kiawah / Johns Island corridor swings widely with traffic (Ocean Course 55–80+ min) — always confirm with a live traffic check for the booked date and time. Entries marked "verify" are best-available estimates; confirm against Google Maps. Add venues as you book them.</p>
+</div>
+
+<script>
+// one-way minutes from CHS; dead-head computed: max(0, oneway-15)*2/60; last field = highway-heavy (for vintage multiplier)
+const venues = [
+  ["Lowndes Grove", "Downtown / Wagener Terrace", 15, false, false],
+  ["William Aiken House", "Downtown (Upper King)", 15, true, false],
+  ["Hibernian Hall", "Downtown (Meeting St)", 15, true, false],
+  ["Gadsden House", "Downtown", 16, true, false],
+  ["The Cedar Room / Cigar Factory", "Downtown (East Side)", 15, true, false],
+  ["Magnolia Plantation", "Ashley River Rd (West)", 20, false, true],
+  ["Middleton Place", "Ashley River Rd (West)", 25, false, true],
+  ["Drayton Hall", "Ashley River Rd (West)", 22, true, true],
+  ["McLeod Plantation", "James Island", 18, true, false],
+  ["Boone Hall Plantation", "Mount Pleasant", 23, false, true],
+  ["Old Wide Awake Plantation", "Hollywood / Ravenel", 30, true, true],
+  ["Legare Waring House", "West Ashley (Charles Towne Landing)", 18, true, false],
+  ["Sullivan's Island", "Sullivan's Island", 27, false, true],
+  ["Boardwalk Inn / Wild Dunes", "Isle of Palms", 35, false, true],
+  ["The Sanctuary", "Kiawah Island", 52, false, true],
+  ["The Dunlin", "Johns Island (Kiawah River)", 55, false, true],
+  ["Ocean Course", "Kiawah Island (far end)", 70, false, true],
+  ["Seabrook Island Club", "Seabrook Island", 55, true, true],
+  ["Beaufort (downtown)", "Beaufort", 75, true, true],
+];
+
+let sortKey = "oneway", sortAsc = true;
+const body = document.getElementById("venueBody");
+
+function deadhead(oneway){
+  const perLeg = Math.max(0, oneway - 15);
+  return (perLeg * 2 / 60);
+}
+
+function render(filter=""){
+  let rows = venues.map(v=>({name:v[0],region:v[1],oneway:v[2],verify:v[3],hwy:v[4],deadhead:deadhead(v[2])}));
+  rows.sort((a,b)=>{
+    let x=a[sortKey],y=b[sortKey];
+    if(typeof x==="string"){x=x.toLowerCase();y=y.toLowerCase();}
+    return (x<y?-1:x>y?1:0)*(sortAsc?1:-1);
+  });
+  const f = filter.toLowerCase();
+  body.innerHTML = rows.map(r=>{
+    const hide = f && !(r.name.toLowerCase().includes(f)||r.region.toLowerCase().includes(f));
+    return `<tr class="${hide?'hidden':''}">
+      <td>${r.name}${r.verify?' <span class="verify">(verify)</span>':''}</td>
+      <td class="region">${r.region}</td>
+      <td class="num">${r.oneway}</td>
+      <td class="num deadhead">${r.deadhead.toFixed(1)}</td>
+      <td class="num">${r.hwy?'Hwy':'City'}</td>
+    </tr>`;
+  }).join("");
+}
+
+document.querySelectorAll("th[data-sort]").forEach(th=>{
+  th.addEventListener("click",()=>{
+    const k = th.dataset.sort;
+    if(sortKey===k) sortAsc=!sortAsc; else {sortKey=k;sortAsc=true;}
+    document.querySelectorAll("th").forEach(h=>h.textContent=h.textContent.replace(/ [▾▴]/,""));
+    th.textContent += sortAsc?" ▾":" ▴";
+    render(document.getElementById("search").value);
+  });
+});
+document.getElementById("search").addEventListener("input",e=>render(e.target.value));
+render();
+</script>
+</body>
+</html>
