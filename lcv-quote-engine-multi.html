@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lowcountry Valet — Multi-Trip Quote Engine</title>
+<style>
+  :root{
+    --ink:#1a2e2a; --ink-soft:#41524d; --paper:#f4f1ea; --card:#fffdf8;
+    --line:#d9d2c4; --brass:#b08d4f; --brass-deep:#8a6d39; --marsh:#2f5d50;
+    --marsh-light:#e4ede9; --alert:#a8442a; --gold:#c9a227;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Helvetica Neue',Arial,sans-serif;background:var(--paper);color:var(--ink);line-height:1.5;padding:24px 16px 80px;}
+  .wrap{max-width:1080px;margin:0 auto;}
+  header{border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:22px;}
+  .eyebrow{text-transform:uppercase;letter-spacing:.24em;font-size:11px;color:var(--brass-deep);font-weight:700;}
+  h1{font-family:Georgia,serif;font-size:30px;font-weight:400;margin-top:6px;color:var(--ink);}
+  .sub{font-size:13.5px;color:var(--ink-soft);margin-top:6px;}
+  .layout{display:grid;grid-template-columns:1.15fr .85fr;gap:22px;align-items:start;}
+  @media(max-width:880px){.layout{grid-template-columns:1fr;}}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:20px;}
+  .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.16em;color:var(--marsh);font-weight:700;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:8px;display:flex;justify-content:space-between;align-items:center;}
+  label{display:block;font-size:12px;color:var(--ink-soft);margin:14px 0 5px;font-weight:600;letter-spacing:.02em;}
+  label:first-of-type{margin-top:0;}
+  select,input[type=number],input[type=text],input[type=date],input[type=time]{width:100%;padding:9px 11px;font-size:14px;border:1px solid var(--line);border-radius:3px;background:#fff;color:var(--ink);font-family:inherit;}
+  select:focus,input:focus{outline:2px solid var(--brass);outline-offset:-1px;}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+  .hint{font-size:11px;color:var(--ink-soft);font-style:italic;margin-top:4px;}
+  .hidden{display:none!important;}
+  .check{display:flex;align-items:center;gap:8px;margin-top:10px;}
+  .check input{width:auto;}
+  .check label{margin:0;font-size:13px;}
+
+  /* ---- Trip cards ---- */
+  .quote-meta{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:16px 20px;margin-bottom:16px;}
+  .trip-list{display:flex;flex-direction:column;gap:14px;}
+  .trip-card{background:var(--card);border:1px solid var(--line);border-radius:5px;padding:0;overflow:hidden;}
+  .trip-card.internal{border-style:dashed;border-color:var(--brass);background:#fbf8f1;}
+  .trip-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 16px;background:var(--marsh-light);border-bottom:1px solid var(--line);}
+  .trip-card.internal .trip-head{background:#f1e9d8;}
+  .trip-title{display:flex;align-items:center;gap:9px;font-weight:700;font-size:13px;color:var(--ink);}
+  .trip-num{font-family:Georgia,serif;font-size:11px;color:#fff;background:var(--marsh);border-radius:50%;width:21px;height:21px;display:inline-flex;align-items:center;justify-content:center;}
+  .trip-card.internal .trip-num{background:var(--brass-deep);}
+  .badge-int{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--brass-deep);border:1px solid var(--brass);border-radius:999px;padding:2px 8px;}
+  .badge-cf{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--marsh);border:1px solid var(--marsh);border-radius:999px;padding:2px 8px;}
+  .trip-body{padding:16px;}
+  .trip-subtotal{display:flex;justify-content:space-between;align-items:baseline;padding:10px 16px;border-top:1px solid var(--line);background:#fcfaf4;font-size:13px;}
+  .trip-subtotal .v{font-weight:700;font-variant-numeric:tabular-nums;font-size:15px;}
+  .x-btn{background:none;border:none;color:var(--alert);font-size:18px;cursor:pointer;line-height:1;padding:2px 6px;border-radius:3px;}
+  .x-btn:hover{background:rgba(168,68,42,.1);}
+  .addtrip-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;}
+  .addbtn{background:var(--marsh);color:#fff;border:none;border-radius:4px;padding:9px 14px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;}
+  .addbtn:hover{background:#23463d;}
+  .addbtn.ghost{background:#fff;color:var(--brass-deep);border:1px solid var(--brass);}
+  .addbtn.ghost:hover{background:var(--marsh-light);}
+
+  /* ---- Quote summary panel ---- */
+  .quote{background:var(--ink);color:var(--paper);border-radius:5px;padding:24px;position:relative;overflow:hidden;position:sticky;top:16px;}
+  .quote::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--brass),var(--gold));}
+  .quote h2{color:var(--brass);border-bottom:1px solid rgba(255,255,255,.15);font-size:12px;text-transform:uppercase;letter-spacing:.16em;font-weight:700;padding-bottom:8px;margin-bottom:14px;}
+  .line{display:flex;justify-content:space-between;align-items:baseline;padding:7px 0;font-size:14px;border-bottom:1px dotted rgba(255,255,255,.14);}
+  .line .lbl{color:#cfc9bb;} .line .val{font-variant-numeric:tabular-nums;font-weight:600;}
+  .line.sub .lbl,.line.sub .val{color:#9aa39a;font-size:12.5px;}
+  .line.discount .val{color:#9ad0a0;}
+  .line.total{font-size:22px;border-bottom:none;margin-top:10px;padding-top:14px;border-top:1px solid rgba(255,255,255,.25);}
+  .line.total .val{color:var(--gold);}
+  .empty-note{color:#9aa39a;font-size:13px;font-style:italic;padding:8px 0;}
+  .skel-tag{display:inline-block;font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--brass-deep);background:var(--marsh-light);border:1px solid var(--brass);border-radius:999px;padding:3px 10px;margin-left:8px;vertical-align:middle;}
+  .ref-tag{font-size:10px;font-weight:600;color:var(--brass-deep);text-transform:none;letter-spacing:0;}
+  #refNum{font-family:'SF Mono',Menlo,monospace;font-size:13px;letter-spacing:.02em;}
+  #refNum:disabled{background:#f4f1ea;color:#9aa39a;}
+  .livebtn{background:var(--marsh);color:#fff;border:none;border-radius:4px;padding:9px 12px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;width:100%;}
+  .livebtn:hover{background:#23463d;}
+  .livebtn:disabled{opacity:.55;cursor:wait;}
+  .live-status{font-size:11.5px;line-height:1.4;margin-top:8px;min-height:14px;}
+  .drive-override{margin-top:10px;border:1px solid var(--line);border-radius:4px;padding:6px 10px;background:#fcfaf4;}
+  .drive-override summary{font-size:11.5px;color:var(--ink-soft);cursor:pointer;font-weight:600;}
+  .drive-override[open]{padding-bottom:10px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Lowcountry Valet · Purveyor of Luxury Transportation</div>
+    <h1>Multi-Trip Quote Engine <span class="skel-tag">In progress — fleet + greeter live</span></h1>
+    <div class="sub">One quote, many trips. Each trip becomes its own Limo Anywhere reservation; the wrapper applies once to the whole quote.</div>
+  </header>
+
+  <div class="layout">
+    <!-- LEFT: quote-level meta + the trip list -->
+    <div>
+      <!-- Quote-level settings (the wrapper inputs) -->
+      <div class="quote-meta">
+        <div class="row2">
+          <div>
+            <label style="margin-top:0;">Inquiry source</label>
+            <select id="source">
+              <option value="" disabled selected>— choose source —</option>
+              <option value="PH">Phone</option>
+              <option value="EM">Email</option>
+              <option value="JOT">Jotform</option>
+              <option value="TXT">Text</option>
+              <option value="IG">Instagram</option>
+              <option value="FB">Facebook</option>
+              <option value="AF">Affiliate</option>
+              <option value="LCV">Walk-in / Other</option>
+            </select>
+          </div>
+          <div>
+            <label style="margin-top:0;">Reference # <span id="refTag" class="ref-tag"></span></label>
+            <input type="text" id="refNum" placeholder="choose a source first" disabled>
+          </div>
+        </div>
+        <div class="hint" id="refHint">The reference # maps to Limo Anywhere's reference field — it ties the lead from inquiry through booking. Auto-generated per source, but editable: paste an upstream ID (Jotform's, an affiliate's confirmation #) over it when one exists.</div>
+
+        <label>Client / quote name</label>
+        <input type="text" id="quoteName" placeholder="e.g. Henderson wedding — arrival weekend">
+        <div class="row3" style="margin-top:12px;">
+          <div>
+            <label style="margin-top:0;">Routing</label>
+            <select id="routing">
+              <option value="retail">Retail</option>
+              <option value="affiliate_local">Affiliate — local (−20%)</option>
+              <option value="affiliate_non">Affiliate — non-local (−10%)</option>
+              <option value="gct">GCT (all-inclusive)</option>
+              <option value="leros">Leros (+10% / −10%)</option>
+              <option value="dewberry">Dewberry (ACH card rate)</option>
+              <option value="dunlin">Dunlin (+7.5% / −7.5%, ACH)</option>
+            </select>
+          </div>
+          <div>
+            <label style="margin-top:0;">Payment (whole quote)</label>
+            <select id="payment">
+              <option value="card">Card (+4% fee)</option>
+              <option value="ach">ACH / Net-30 (no fee)</option>
+              <option value="check">Check (no fee)</option>
+              <option value="venmo">Venmo (no fee)</option>
+            </select>
+          </div>
+          <div>
+            <label style="margin-top:0;">Group discount %</label>
+            <input type="number" id="groupDisc" value="0" min="0" max="100" step="0.5">
+          </div>
+        </div>
+        <div class="hint">Payment method is one choice for the whole quote — no mixed payments. Group discount applies to the summed trips <em>before</em> the card fee.</div>
+      </div>
+
+      <!-- The trip list -->
+      <div class="trip-list" id="tripList"></div>
+
+      <div class="addtrip-row">
+        <button class="addbtn" data-add="fromairport" type="button">+ From Airport</button>
+        <button class="addbtn" data-add="toairport" type="button">+ To Airport</button>
+        <button class="addbtn" data-add="p2p" type="button">+ Point-to-Point</button>
+        <button class="addbtn" data-add="hourly" type="button">+ Hourly</button>
+        <button class="addbtn" data-add="greeter" type="button">+ Greeter</button>
+        <button class="addbtn ghost" data-add="standby" type="button">+ Standby (internal)</button>
+        <button class="addbtn ghost" data-add="secondary" type="button">+ Secondary Driver (internal)</button>
+      </div>
+      <div class="hint" style="margin-top:8px;">Client-facing trips bill to the client. Internal trips (Standby, Secondary Driver) become Limo Anywhere reservations for staffing but aren't client line items. Secondary Driver is normally auto-generated by Over-the-Road relief logic — manual add is for exceptions.</div>
+    </div>
+
+    <!-- RIGHT: quote summary -->
+    <div>
+      <div class="quote">
+        <h2>Quote Summary</h2>
+        <div id="summaryBody">
+          <div class="empty-note">No trips yet. Add a trip to begin building the quote.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const M=n=>'$'+Math.round(n).toLocaleString();
+
+// ============================================================================
+// DATA MODEL — a quote is a list of trips. This is the spine.
+// ----------------------------------------------------------------------------
+// Each trip is ONE Limo Anywhere reservation and carries its own money:
+//   { id, kind, clientFacing, vehicle, route fields, date/time, drive times,
+//     base, gratuityPct, discountPct, addons[], subtotal }
+// The wrapper (quote-level, applied once): group discount, then single card fee.
+// ============================================================================
+
+// ============================================================================
+// RATE TABLES (ported verbatim from the working single-trip engine)
+// ============================================================================
+const STD={ sedan:{floor:120,r2:95,r4:95,name:'Luxury Sedan'}, fsuv:{floor:140,r2:120,r4:120,name:'Full Size SUV'},
+  vsuv:{floor:150,r2:130,r4:130,name:'VIP SUV'}, svan:{floor:220,r2:190,r4:175,name:'Sprinter Van'}, slimo:{floor:300,r2:200,r4:185,name:'Sprinter Limo'} };
+const GREETER_RATE=50, GREETER_MIN_HRS=3; // per SOP: $50/hr, 3hr min, +20% grat
+
+function tierRate(veh,hrs){ return hrs>=4?STD[veh].r4:STD[veh].r2; }
+function isAirportKind(kind){ return kind==='fromairport'||kind==='toairport'; }
+
+// ----------------------------------------------------------------------------
+// priceTrip(trip) — PURE pricing for one trip. Returns {base, lines[], note}.
+// No DOM. This is the per-trip spine; the wrapper sums these.
+// Currently handles: standard fleet (airport + p2p), greeter. (hourly/bus/vintage/otr next.)
+// ----------------------------------------------------------------------------
+function priceTrip(trip){
+  const lines=[];
+  const k=trip.kind;
+
+  // ---- GREETER: $50/hr, 3hr min (gratuity applied at trip wrapper) ----
+  if(k==='greeter'){
+    const reqHrs=+trip.hours||0;
+    const hrs=Math.max(GREETER_MIN_HRS, reqHrs);
+    const base=GREETER_RATE*hrs;
+    lines.push({lbl:'Greeter ('+hrs.toFixed(1)+'h × $'+GREETER_RATE+(hrs>reqHrs?' · 3h min':'')+')', val:base, sub:true});
+    return {base, lines, note:'Greeter '+hrs.toFixed(1)+'h @ $'+GREETER_RATE+'/hr'};
+  }
+
+  // ---- INTERNAL: standby / secondary driver (not client-billed) ----
+  if(k==='standby'||k==='secondary'){
+    return {base:0, lines:[{lbl:'Internal staffing reservation — not client-billed', val:0, sub:true}], note:'internal'};
+  }
+
+  // ---- STANDARD FLEET: From/To Airport + P2P + Hourly ----
+  const veh=trip.vehicle||'sedan';
+  const std=+trip.driveStd||0, busy=+trip.driveBusy||0;
+  const median=(std+busy)/2;
+  const waived=Math.max(0,median-15);
+  const airport=isAirportKind(k);
+  let billHours;
+  if(airport){
+    billHours=(median/60)+(waived/60);                 // service drive out + waived dead-head back
+  } else if(k==='hourly'){
+    billHours=(+trip.hours||0)+(waived/60)*2;          // booked hours + round-trip waived dead-head
+  } else { // p2p
+    billHours=(median/60)+(waived/60)*2;               // service drive + round-trip waived dead-head
+  }
+  const rate=tierRate(veh,billHours);
+  const floor=STD[veh]?STD[veh].floor:0;
+  const minHrs=airport?0.75:2;
+  const billedHrs=Math.max(billHours,minHrs);
+  const timeCalc=billedHrs*rate;
+  const base=Math.max(floor,timeCalc);
+  const usedFloor=floor>=timeCalc;
+  lines.push({lbl:'Billable hrs', val:null, txt:billHours.toFixed(2)+(billedHrs>billHours?' → '+billedHrs.toFixed(2)+' (min)':''), sub:true});
+  lines.push({lbl:usedFloor?'Base (vehicle floor)':'Base ('+billedHrs.toFixed(2)+'h × $'+rate+')', val:base});
+  return {base, lines, note:(STD[veh]?STD[veh].name:veh)+' '+(airport?'airport':(k==='hourly'?'hourly':'P2P'))};
+}
+
+// ============================================================================
+// LIVE MAPS — location data + per-trip geocoded Routes lookup.
+// Ported from the working single-trip engine. PASTE YOUR KEY BELOW (same key).
+// ============================================================================
+const MAPS_KEY = "AIzaSyBbDAZxx2TaQSt5c98Xd8dLROqti5kfbnc";
+const CHS_HUB={lat:32.8986,lng:-80.0405};
+const AIRPORTS={
+  chs_main:{name:'CHS — Main Terminal',addr:'5500 International Blvd, North Charleston, SC 29418',lat:32.8986,lng:-80.0405},
+  chs_signature:{name:'CHS — Signature FBO',addr:'5875 S Aviation Ave, North Charleston, SC 29406',lat:32.8845,lng:-80.0330},
+  chs_atlantic:{name:'CHS — Atlantic Aviation FBO',addr:'6060 S Aviation Ave, North Charleston, SC 29406',lat:32.8862,lng:-80.0305},
+  jzi_atlantic:{name:'JZI Charleston Exec — Atlantic Aviation',addr:'3050 Transatlantic Way, Johns Island, SC 29455',lat:32.7011,lng:-80.0028},
+  lro_main:{name:'LRO Mt Pleasant Regional — Faison Field FBO',addr:'700 Faison Rd, Mount Pleasant, SC 29464',lat:32.8978,lng:-79.7829},
+  sav_main:{name:'SAV — Main Terminal',addr:'400 Airways Ave, Savannah, GA 31408',lat:32.1276,lng:-81.2021},
+  sav_sheltair:{name:'SAV — Sheltair FBO',addr:'100 Eddie Jungemann Dr, Savannah, GA 31408',lat:32.1262,lng:-81.1985},
+  sav_signature:{name:'SAV — Signature FBO',addr:'42 Airways Ave, Savannah, GA 31408',lat:32.1295,lng:-81.2055}
+};
+const AREAS={
+  none:{name:'— not set —'},
+  downtown:{name:'Downtown',lat:32.7765,lng:-79.9311},
+  mtp:{name:'Mt Pleasant',lat:32.8323,lng:-79.8284},
+  ji:{name:'James Island',lat:32.7327,lng:-79.9530},
+  wa:{name:'West Ashley',lat:32.7993,lng:-80.0118},
+  kiawah:{name:'Kiawah corridor',lat:32.6087,lng:-80.0850},
+  beaches:{name:'Beaches/IOP',lat:32.7866,lng:-79.7726},
+  lowndes:{name:'Lowndes Grove',addr:'266 St Margaret St, Charleston, SC 29403',lat:32.7967,lng:-79.9637},
+  magnolia:{name:'Magnolia Plantation',addr:'3550 Ashley River Rd, Charleston, SC 29414',lat:32.8780,lng:-80.0876},
+  boone:{name:'Boone Hall',addr:'1235 Long Point Rd, Mount Pleasant, SC 29464',lat:32.8444,lng:-79.8113},
+  sanctuary:{name:'Sanctuary (Kiawah)',addr:'1 Sanctuary Beach Dr, Kiawah Island, SC 29455',lat:32.6045,lng:-80.0889},
+  oceancourse:{name:'Ocean Course',addr:'1000 Ocean Course Dr, Kiawah Island, SC 29455',lat:32.6068,lng:-80.0469},
+  dunlin:{name:'The Dunlin',addr:'40 Jenkins Point Rd, Johns Island, SC 29455',lat:32.5790,lng:-80.1730}
+};
+const driveCache={}, geoCache={};
+function mapsReady(){ return typeof MAPS_KEY==='string' && MAPS_KEY.trim().length>10; }
+function locOpts(sel){ return Object.keys(AREAS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AREAS[k].name+'</option>').join(''); }
+function airportOpts(sel){ return Object.keys(AIRPORTS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AIRPORTS[k].name+'</option>').join(''); }
+function resolveLoc(key){ if(AIRPORTS[key]) return AIRPORTS[key]; if(AREAS[key]&&AREAS[key].lat!=null) return AREAS[key]; return null; }
+
+async function geocodeLoc(loc){
+  if(!loc) return null;
+  if(!loc.addr) return {lat:loc.lat,lng:loc.lng,exact:false};
+  if(geoCache[loc.addr]) return geoCache[loc.addr];
+  try{
+    const url="https://maps.googleapis.com/maps/api/geocode/json?address="+encodeURIComponent(loc.addr)+"&key="+encodeURIComponent(MAPS_KEY);
+    const res=await fetch(url);
+    if(!res.ok) throw new Error("geocode "+res.status);
+    const data=await res.json();
+    if(data.status!=='OK'||!data.results||!data.results[0]) throw new Error("geocode "+data.status);
+    const p=data.results[0].geometry.location;
+    const out={lat:p.lat,lng:p.lng,exact:true};
+    geoCache[loc.addr]=out;
+    return out;
+  }catch(e){ return {lat:loc.lat,lng:loc.lng,exact:false}; }
+}
+function deptISOfor(trip){
+  if(!trip.date) return {iso:null,past:false};
+  const d=new Date(trip.date+'T'+(trip.time||'14:00')+':00');
+  const now=new Date();
+  if(d.getTime() < now.getTime()+60000) return {iso:new Date(now.getTime()+120000).toISOString(), past:true};
+  return {iso:d.toISOString(), past:false};
+}
+async function fetchLegPair(from,to,departISO){
+  const ck=from.lat+','+from.lng+'|'+to.lat+','+to.lng+'|'+(departISO||'now');
+  if(driveCache[ck]) return driveCache[ck];
+  async function one(model){
+    const body={origin:{location:{latLng:{latitude:from.lat,longitude:from.lng}}},
+      destination:{location:{latLng:{latitude:to.lat,longitude:to.lng}}},
+      travelMode:"DRIVE", routingPreference:"TRAFFIC_AWARE_OPTIMAL", trafficModel:model,
+      ...(departISO?{departureTime:departISO}:{})};
+    const res=await fetch("https://routes.googleapis.com/directions/v2:computeRoutes",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","X-Goog-Api-Key":MAPS_KEY,"X-Goog-FieldMask":"routes.duration"},
+      body:JSON.stringify(body)});
+    if(!res.ok){ let m=''; try{const e=await res.json(); m=e.error&&e.error.message?(' — '+e.error.message):'';}catch(_){} throw new Error("Routes API "+res.status+m); }
+    const data=await res.json();
+    const r=data.routes&&data.routes[0];
+    const secs=r&&r.duration?parseInt(r.duration):null;
+    if(secs==null) throw new Error("no route");
+    return Math.round(secs/60);
+  }
+  const optimistic=await one("OPTIMISTIC");
+  const pessimistic=await one("PESSIMISTIC");
+  const out={std:Math.min(optimistic,pessimistic), busy:Math.max(optimistic,pessimistic)};
+  driveCache[ck]=out;
+  return out;
+}
+// Per-trip live lookup: resolves the trip's from/to (geocoded), fetches std/busy, writes to the trip.
+async function refreshTripTimes(trip, statusEl){
+  if(!mapsReady()){ if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Add your Maps API key to the file to enable live times.</span>'; return; }
+  if(!trip.date){ if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Set a service date on this trip first.</span>'; return; }
+  try{
+    const fromLoc=resolveLoc(trip.fromKey), toLoc=resolveLoc(trip.toKey);
+    if(!fromLoc||!toLoc) throw new Error("pick both locations");
+    if(statusEl) statusEl.textContent='Resolving locations…';
+    const [from,to]=await Promise.all([geocodeLoc(fromLoc),geocodeLoc(toLoc)]);
+    if(statusEl) statusEl.textContent='Fetching live drive times…';
+    const dep=deptISOfor(trip);
+    const pair=await fetchLegPair(from,to,dep.iso);
+    trip.driveStd=pair.std; trip.driveBusy=pair.busy;
+    const spread=pair.busy-pair.std;
+    const exactNote=(from.exact||to.exact)?'':' (approx)';
+    let msg='<span style="color:#2f7d50">✓ std '+pair.std+' / busy '+pair.busy+' min'+(spread<=1?'':' (±'+spread+')')+exactNote+'</span>';
+    if(dep.past) msg='<span style="color:#8a6d39">⚠ past date/time — used current traffic, not booked time. (std '+pair.std+'/busy '+pair.busy+')</span>';
+    if(statusEl) statusEl.innerHTML=msg;
+    computeTrip(trip);
+    refreshSubtotalUI(trip);
+    renderSummary();
+  }catch(err){
+    if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Lookup failed ('+err.message+'). Enter times manually below.</span>';
+  }
+}
+
+// Trip-type catalog. clientFacing flag is the key fork from the design.
+const TRIP_TYPES={
+  fromairport:{label:'From Airport',   clientFacing:true,  defGrat:20},
+  toairport:  {label:'To Airport',     clientFacing:true,  defGrat:20},
+  p2p:        {label:'Point-to-Point', clientFacing:true,  defGrat:20},
+  hourly:     {label:'Hourly',         clientFacing:true,  defGrat:20},
+  greeter:    {label:'Greeter',        clientFacing:true,  defGrat:20}, // $50/hr, 3hr min, +20%
+  standby:    {label:'Standby',        clientFacing:false, defGrat:0},  // internal — emergency backup chauffeur
+  secondary:  {label:'Secondary Driver',clientFacing:false,defGrat:0}   // internal — OTR FMCSA relief (usually auto-generated)
+};
+
+// The live quote state: the ordered list of trips.
+let TRIPS=[];
+let tripSeq=0;
+
+function makeTrip(kind){
+  const t=TRIP_TYPES[kind];
+  return {
+    id:'trip_'+(++tripSeq),
+    kind,
+    clientFacing:t.clientFacing,
+    // pricing inputs
+    vehicle:'sedan',
+    hours:(kind==='greeter'?3:(kind==='hourly'?4:0)),
+    fromKey:'none', toKey:'none',   // location dropdown selections
+    driveStd:20, driveBusy:28,
+    date:'', time:'14:00',
+    // money
+    base:0,
+    gratuityPct:t.defGrat,
+    discountPct:0,
+    addons:[],       // [{label, amount}]
+    subtotal:0,
+    note:''
+  };
+}
+
+// Run pricing + the PER-TRIP wrapper (gratuity, discount, add-ons) → subtotal.
+// Per spec: gratuity & discount both off the base IN PARALLEL. Add-ons add on top.
+function computeTrip(trip){
+  const p=priceTrip(trip);
+  trip.base=p.base;
+  trip.note=p.note;
+  const grat=p.base*(trip.gratuityPct/100);
+  const disc=p.base*(trip.discountPct/100);
+  const addonTotal=(trip.addons||[]).reduce((s,a)=>s+(+a.amount||0),0);
+  trip.subtotal=p.base+grat-disc+addonTotal;
+  trip._priceLines=p.lines;
+  trip._grat=grat; trip._disc=disc; trip._addonTotal=addonTotal;
+  return trip;
+}
+
+// ---- Render the trip list with real inputs ----
+function vehOpts(sel){ return Object.keys(STD).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+STD[k].name+'</option>').join(''); }
+
+function tripBodyHTML(trip){
+  const k=trip.kind;
+  if(k==='standby'||k==='secondary'){
+    const why = k==='secondary'
+      ? 'Auto-generated by Over-the-Road relief logic in the full build. Manual add is for exceptions. Becomes its own LA reservation (Secondary Driver).'
+      : 'Operations adds this as an emergency-backup chauffeur. Becomes its own LA reservation (Standby). Not a client line item.';
+    return '<div class="hint" style="margin-top:0;">'+why+'</div>';
+  }
+  if(k==='greeter'){
+    return ''
+      + '<div class="row2">'
+      +   '<div><label style="margin-top:0;">Greeter hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
+      +   '<div><label style="margin-top:0;">Gratuity %</label><input type="number" data-f="gratuityPct" value="'+trip.gratuityPct+'" min="0" step="0.5"></div>'
+      + '</div>'
+      + '<div class="hint">$50/hr, 3-hour minimum, +20% gratuity (per SOP). Offered when a client has several airport arrivals, or auto-added for meet-and-greets on larger-than-SUV vehicles.</div>';
+  }
+  // standard fleet: airport / p2p / hourly — directional location pickers + live times
+  const airport=isAirportKind(k);
+  // build the two location selects per direction
+  let fromPicker, toPicker, fromLbl, toLbl;
+  if(k==='fromairport'){
+    fromLbl='Pickup (airport)'; toLbl='Dropoff (area)';
+    fromPicker='<select data-f="fromKey">'+airportOpts(trip.fromKey!=='none'?trip.fromKey:'chs_main')+'</select>';
+    toPicker='<select data-f="toKey">'+locOpts(trip.toKey)+'</select>';
+  } else if(k==='toairport'){
+    fromLbl='Pickup (area)'; toLbl='Dropoff (airport)';
+    fromPicker='<select data-f="fromKey">'+locOpts(trip.fromKey)+'</select>';
+    toPicker='<select data-f="toKey">'+airportOpts(trip.toKey!=='none'?trip.toKey:'chs_main')+'</select>';
+  } else { // p2p / hourly
+    fromLbl='Pickup / from (area)'; toLbl=(k==='hourly'?'Primary area':'Dropoff / to (area)');
+    fromPicker='<select data-f="fromKey">'+locOpts(trip.fromKey)+'</select>';
+    toPicker='<select data-f="toKey">'+locOpts(trip.toKey)+'</select>';
+  }
+  const hoursField = (k==='hourly')
+    ? '<div><label style="margin-top:0;">Booked hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
+    : '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>';
+  const billNote = k==='hourly'?'Hourly bills booked hours + round-trip dead-head.':(airport?'Airport bills service drive out + waived dead-head back.':'P2P bills the drive + round-trip waived dead-head.');
+  return ''
+    + '<div class="row2">'
+    +   '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOpts(trip.vehicle)+'</select></div>'
+    +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">'+fromLbl+'</label>'+fromPicker+'</div>'
+    +   '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
+    +   hoursField
+    +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
+    + '</div>'
+    + '<div class="live-status" data-livestatus="1"></div>'
+    + '<details class="drive-override"><summary>Drive times (override)</summary>'
+    +   '<div class="row2" style="margin-top:8px;">'
+    +     '<div><label style="margin-top:0;">Standard (min)</label><input type="number" data-f="driveStd" value="'+trip.driveStd+'" min="0"></div>'
+    +     '<div><label style="margin-top:0;">Busy (min)</label><input type="number" data-f="driveBusy" value="'+trip.driveBusy+'" min="0"></div>'
+    +   '</div>'
+    + '</details>'
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Gratuity %</label><input type="number" data-f="gratuityPct" value="'+trip.gratuityPct+'" min="0" step="0.5"></div>'
+    +   '<div><label style="margin-top:0;">Trip discount %</label><input type="number" data-f="discountPct" value="'+trip.discountPct+'" min="0" step="0.5"></div>'
+    + '</div>'
+    + '<div class="hint">'+billNote+' Click <strong>Live drive times</strong> to fill std/busy from Google (geocoded to the exact venue); the model prices on their median. Override manually if needed.</div>';
+}
+
+function renderTrips(){
+  const list=$('tripList');
+  list.innerHTML='';
+  TRIPS.forEach((trip,i)=>{
+    computeTrip(trip);
+    const meta=TRIP_TYPES[trip.kind];
+    const card=document.createElement('div');
+    card.className='trip-card'+(meta.clientFacing?'':' internal');
+    card.dataset.tid=trip.id;
+    let subline='';
+    if(meta.clientFacing){
+      subline='<div class="trip-subtotal"><span class="lbl">Trip subtotal'
+        + (trip.gratuityPct?` · +${trip.gratuityPct}% grat`:'')
+        + (trip.discountPct?` · −${trip.discountPct}%`:'')
+        + '</span><span class="v">'+M(trip.subtotal)+'</span></div>';
+    } else {
+      subline='<div class="trip-subtotal"><span class="lbl">Internal — no client charge</span><span class="v">—</span></div>';
+    }
+    card.innerHTML=`
+      <div class="trip-head">
+        <div class="trip-title"><span class="trip-num">${i+1}</span> ${meta.label}
+          ${meta.clientFacing?'<span class="badge-cf">Client-facing</span>':'<span class="badge-int">Internal</span>'}
+        </div>
+        <button class="x-btn" data-del="${trip.id}" title="Remove trip">&times;</button>
+      </div>
+      <div class="trip-body">${tripBodyHTML(trip)}</div>
+      ${subline}
+    `;
+    list.appendChild(card);
+  });
+  renderSummary();
+}
+
+// ============================================================================
+// QUOTE-WIDE WRAPPER — the only group-level math.
+// Order (per spec): sum client-facing subtotals → group discount → card fee.
+// Card is the ONLY payment type with a pass-through (4%); ACH/Check/Venmo = none.
+// Internal trips never enter the client total.
+// ============================================================================
+const CARD_FEE_PCT=4;
+function computeWrapper(){
+  const cfTrips=TRIPS.filter(t=>t.clientFacing);
+  const sumTrips=cfTrips.reduce((s,t)=>s+t.subtotal,0);
+  const groupDiscPct=+($('groupDisc')?$('groupDisc').value:0)||0;
+  const groupDisc=sumTrips*(groupDiscPct/100);
+  const afterDisc=sumTrips-groupDisc;
+  const payment=$('payment')?$('payment').value:'card';
+  const cardFee = payment==='card' ? afterDisc*(CARD_FEE_PCT/100) : 0;
+  const grand=afterDisc+cardFee;
+  return {cfTrips,sumTrips,groupDiscPct,groupDisc,afterDisc,payment,cardFee,grand};
+}
+
+// ---- Render the quote summary with the real grand total ----
+function renderSummary(){
+  const body=$('summaryBody');
+  if(TRIPS.length===0){
+    body.innerHTML='<div class="empty-note">No trips yet. Add a trip to begin building the quote.</div>';
+    return;
+  }
+  const w=computeWrapper();
+  const intl=TRIPS.length-w.cfTrips.length;
+  let html='';
+  TRIPS.forEach((t,i)=>{
+    const meta=TRIP_TYPES[t.kind];
+    const val=meta.clientFacing?M(t.subtotal):'—';
+    html+=`<div class="line ${meta.clientFacing?'':'sub'}"><span class="lbl">${i+1}. ${meta.label}${meta.clientFacing?'':' (internal)'}</span><span class="val">${val}</span></div>`;
+  });
+  html+=`<div class="line"><span class="lbl">Sum of trips</span><span class="val">${M(w.sumTrips)}</span></div>`;
+  if(w.groupDiscPct>0){
+    html+=`<div class="line sub discount"><span class="lbl">Group discount (−${w.groupDiscPct}%)</span><span class="val">−${M(w.groupDisc)}</span></div>`;
+  }
+  if(w.payment==='card'){
+    html+=`<div class="line sub"><span class="lbl">Card fee (${CARD_FEE_PCT}%)</span><span class="val">${M(w.cardFee)}</span></div>`;
+  } else {
+    html+=`<div class="line sub"><span class="lbl">Processing fee</span><span class="val">none (${w.payment.toUpperCase()})</span></div>`;
+  }
+  html+=`<div class="line total"><span class="lbl">Grand total</span><span class="val">${M(w.grand)}</span></div>`;
+  html+=`<div class="empty-note" style="margin-top:12px;">${TRIPS.length} trip(s): ${w.cfTrips.length} client-facing, ${intl} internal${intl?' (not billed)':''}. Each client-facing trip → its own LA reservation.</div>`;
+  body.innerHTML=html;
+}
+
+// ---- Add / remove trips ----
+function addTrip(kind){ TRIPS.push(makeTrip(kind)); renderTrips(); }
+function delTrip(id){ TRIPS=TRIPS.filter(t=>t.id!==id); renderTrips(); }
+
+document.querySelectorAll('[data-add]').forEach(b=>{
+  b.onclick=()=>addTrip(b.dataset.add);
+});
+
+// update just one trip's subtotal line in place (preserves focus/inputs)
+function refreshSubtotalUI(trip){
+  const card=document.querySelector('[data-tid="'+trip.id+'"]');
+  if(!card) return;
+  const sub=card.querySelector('.trip-subtotal .v');
+  if(sub) sub.textContent = trip.clientFacing ? M(trip.subtotal) : '—';
+}
+
+// delete + live-times button (delegated click)
+$('tripList').addEventListener('click',e=>{
+  const del=e.target.closest('[data-del]');
+  if(del){ delTrip(del.dataset.del); return; }
+  const live=e.target.closest('[data-live]');
+  if(live){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const statusEl=card.querySelector('[data-livestatus]');
+    live.disabled=true;
+    refreshTripTimes(trip,statusEl).finally(()=>{ live.disabled=false; });
+  }
+});
+$('tripList').addEventListener('input',e=>{
+  const f=e.target.dataset.f; if(!f) return;
+  const card=e.target.closest('[data-tid]'); if(!card) return;
+  const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct'];
+  trip[f]= numeric.includes(f) ? (+e.target.value||0) : e.target.value;
+  computeTrip(trip);
+  refreshSubtotalUI(trip);
+  renderSummary();
+});
+
+// ============================================================================
+// QUOTE ID / REFERENCE # — source prefix + timestamp, paste-or-override.
+// Timestamp-based = collision-free across agents/devices without shared storage.
+// (Shared-sequential numbering comes with the Google Sheet backend later.)
+// ============================================================================
+function pad(n){return String(n).padStart(2,'0');}
+function genRef(prefix){
+  const d=new Date();
+  const stamp=String(d.getFullYear()).slice(2)+pad(d.getMonth()+1)+pad(d.getDate())+'-'+pad(d.getHours())+pad(d.getMinutes());
+  return prefix+'-'+stamp;
+}
+// sources that ALWAYS arrive WITH their own upstream ID → paste only, never auto-generate
+const PASTE_ONLY={JOT:'Jotform generates its own quote ID — paste it here. This is the reference; it keeps the thread linked end to end.'};
+// sources that MAY carry an upstream ID → auto-generate but hint that it's overridable
+const PASTE_OPTIONAL={AF:'If the affiliate provided their own reference/confirmation #, paste it over this. If they\'re on LA it may transfer automatically — otherwise this rides into LA\'s reference field.'};
+
+let refUserEdited=false;
+function onSourceChange(){
+  const prefix=$('source').value;
+  if(!prefix) return;
+  const ref=$('refNum');
+  ref.disabled=false;
+  refUserEdited=false;
+  if(PASTE_ONLY[prefix]){
+    // Jotform: don't generate — wait for the pasted ID
+    ref.value='';
+    ref.placeholder='paste the '+prefix+' quote ID';
+    $('refTag').textContent='(paste required)';
+    $('refTag').style.color='var(--alert)';
+    $('refHint').textContent=PASTE_ONLY[prefix];
+  } else {
+    ref.value=genRef(prefix);
+    $('refTag').textContent='(auto)';
+    $('refTag').style.color='var(--brass-deep)';
+    $('refHint').textContent = PASTE_OPTIONAL[prefix]
+      || 'Auto-generated for this source. Editable — paste an upstream ID over it if one exists. Maps to Limo Anywhere\'s reference field.';
+  }
+}
+$('source').addEventListener('change',onSourceChange);
+// quote-wide wrapper inputs re-run the summary
+['groupDisc','payment'].forEach(id=>{ if($(id)) $(id).addEventListener('input',renderSummary); });
+$('refNum').addEventListener('input',()=>{
+  refUserEdited=true;
+  const prefix=$('source').value;
+  if(PASTE_ONLY[prefix]){
+    const ok=$('refNum').value.trim().length>0;
+    $('refTag').textContent= ok ? '(pasted)' : '(paste required)';
+    $('refTag').style.color= ok ? 'var(--marsh)' : 'var(--alert)';
+  } else {
+    $('refTag').textContent='(edited)';
+    $('refTag').style.color='var(--marsh)';
+  }
+});
+
+// initial state: empty quote
+renderTrips();
+</script>
+</body>
+</html>
