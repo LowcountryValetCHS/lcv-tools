@@ -78,6 +78,13 @@
   .drive-override{margin-top:10px;border:1px solid var(--line);border-radius:4px;padding:6px 10px;background:#fcfaf4;}
   .drive-override summary{font-size:11.5px;color:var(--ink-soft);cursor:pointer;font-weight:600;}
   .drive-override[open]{padding-bottom:10px;}
+  .breakdown{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px;}
+  .breakdown summary{font-size:11.5px;color:var(--brass-deep);cursor:pointer;font-weight:700;letter-spacing:.04em;text-transform:uppercase;}
+  .bd-body{margin-top:8px;}
+  .bd-line{display:flex;justify-content:space-between;font-size:12.5px;padding:4px 0;color:var(--ink-soft);border-bottom:1px dotted var(--line);}
+  .bd-line.sub{font-size:11.5px;color:#7a857f;padding-left:8px;}
+  .bd-line.discount{color:#2f7d50;}
+  .bd-line.total{font-weight:700;color:var(--ink);border-bottom:none;border-top:1px solid var(--line);margin-top:4px;padding-top:6px;}
 </style>
 </head>
 <body>
@@ -101,7 +108,8 @@
               <option value="PH">Phone</option>
               <option value="EM">Email</option>
               <option value="JOT">Jotform</option>
-              <option value="TXT">Text</option>
+              <option value="BT">Beetexting</option>
+              <option value="WA">WhatsApp</option>
               <option value="IG">Instagram</option>
               <option value="FB">Facebook</option>
               <option value="AF">Affiliate</option>
@@ -198,9 +206,12 @@ function tierRate(veh,hrs){ return hrs>=4?STD[veh].r4:STD[veh].r2; }
 function isAirportKind(kind){ return kind==='fromairport'||kind==='toairport'; }
 
 // ----------------------------------------------------------------------------
-// priceTrip(trip) — PURE pricing for one trip. Returns {base, lines[], note}.
+// priceTrip(trip) — PURE pricing for one trip.
+// Returns {base, lines[], note, holidayPct, holidayName, passthroughs[]}.
+//   base         = time-rate + late-night  (the gratuity-bearing amount, pre-holiday)
+//   holidayPct   = 0 or 0.30 (auto from date) — folded into base BEFORE gratuity in computeTrip
+//   passthroughs = auto-detected reimbursements (e.g. Kiawah gate) — added AFTER gratuity, no markup
 // No DOM. This is the per-trip spine; the wrapper sums these.
-// Currently handles: standard fleet (airport + p2p), greeter. (hourly/bus/vintage/otr next.)
 // ----------------------------------------------------------------------------
 function priceTrip(trip){
   const lines=[];
@@ -212,12 +223,12 @@ function priceTrip(trip){
     const hrs=Math.max(GREETER_MIN_HRS, reqHrs);
     const base=GREETER_RATE*hrs;
     lines.push({lbl:'Greeter ('+hrs.toFixed(1)+'h × $'+GREETER_RATE+(hrs>reqHrs?' · 3h min':'')+')', val:base, sub:true});
-    return {base, lines, note:'Greeter '+hrs.toFixed(1)+'h @ $'+GREETER_RATE+'/hr'};
+    return {base, lines, note:'Greeter '+hrs.toFixed(1)+'h @ $'+GREETER_RATE+'/hr', holidayPct:0, holidayName:null, passthroughs:[]};
   }
 
   // ---- INTERNAL: standby / secondary driver (not client-billed) ----
   if(k==='standby'||k==='secondary'){
-    return {base:0, lines:[{lbl:'Internal staffing reservation — not client-billed', val:0, sub:true}], note:'internal'};
+    return {base:0, lines:[{lbl:'Internal staffing reservation — not client-billed', val:0, sub:true}], note:'internal', holidayPct:0, holidayName:null, passthroughs:[]};
   }
 
   // ---- STANDARD FLEET: From/To Airport + P2P + Hourly ----
@@ -239,11 +250,58 @@ function priceTrip(trip){
   const minHrs=airport?0.75:2;
   const billedHrs=Math.max(billHours,minHrs);
   const timeCalc=billedHrs*rate;
-  const base=Math.max(floor,timeCalc);
+  let base=Math.max(floor,timeCalc);
   const usedFloor=floor>=timeCalc;
   lines.push({lbl:'Billable hrs', val:null, txt:billHours.toFixed(2)+(billedHrs>billHours?' → '+billedHrs.toFixed(2)+' (min)':''), sub:true});
   lines.push({lbl:usedFloor?'Base (vehicle floor)':'Base ('+billedHrs.toFixed(2)+'h × $'+rate+')', val:base});
-  return {base, lines, note:(STD[veh]?STD[veh].name:veh)+' '+(airport?'airport':(k==='hourly'?'hourly':'P2P'))};
+
+  // ---- LATE-NIGHT (11:30pm–6:30am): service revenue → IN base (gets gratuity). ----
+  if(isLateNight(trip.time)){
+    const svcHrs = airport ? (median/60) : (k==='hourly' ? (+trip.hours||0) : (median/60));
+    const lh=Math.max(35, svcHrs*35);
+    base+=lh;
+    lines.push({lbl:'Late-night surcharge ($35/hr · $35 min)', val:lh, sub:true});
+  }
+
+  // ---- HOLIDAY (auto from date): % of base, folded into base BEFORE gratuity (handled in computeTrip). ----
+  const holidayName=holidayOf(trip.date);
+  const holidayPct = holidayName ? 0.30 : 0;
+
+  // ---- PASS-THROUGHS (auto-detected): reimbursements added AFTER gratuity, NO markup. ----
+  const passthroughs=[];
+  // Kiawah gate pass — auto when a location is gate-controlled. $24 cars/vans, $43 buses.
+  const KIAWAH=['kiawah','sanctuary','oceancourse'];
+  if(KIAWAH.includes(trip.fromKey)||KIAWAH.includes(trip.toKey)){
+    passthroughs.push({label:'Kiawah gate pass', amount:24, auto:true}); // bus rate handled when bus type lands
+  }
+
+  return {base, lines, note:(STD[veh]?STD[veh].name:veh)+' '+(airport?'airport':(k==='hourly'?'hourly':'P2P')), holidayPct, holidayName, passthroughs};
+}
+
+// late-night window: pickup time 11:30pm–6:30am (≥23.5h or <6.5h)
+function isLateNight(timeStr){
+  if(!timeStr) return false;
+  const [h,m]=timeStr.split(':').map(Number);
+  const t=h*60+m;
+  return t>=23.5*60 || t<6.5*60;
+}
+// holiday detection (ported from single-trip engine) — returns name or null
+function holidayOf(dateStr){
+  if(!dateStr) return null;
+  const d=new Date(dateStr+'T00:00:00'); const m=d.getMonth(), day=d.getDate(), y=d.getFullYear();
+  const nthDow=(month,weekday,n)=>{ let c=0; for(let dd=1;dd<=31;dd++){const t=new Date(y,month,dd); if(t.getMonth()!==month)break; if(t.getDay()===weekday){c++; if(c===n)return t.getDate();}} return null; };
+  const lastDow=(month,weekday)=>{ let r=null; for(let dd=1;dd<=31;dd++){const t=new Date(y,month,dd); if(t.getMonth()!==month)break; if(t.getDay()===weekday)r=t.getDate();} return r; };
+  if(m===0&&day===1) return "New Year's Day";
+  if(m===11&&day===31) return "New Year's Eve";
+  if(m===4&&day===lastDow(4,1)) return "Memorial Day";
+  if(m===6&&day===4) return "Independence Day";
+  if(m===8&&day===nthDow(8,1,1)) return "Labor Day";
+  const thx=nthDow(10,4,4); if(m===10&&day===thx) return "Thanksgiving";
+  if(m===10&&day===thx+1) return "Black Friday";
+  if(m===11&&day===24) return "Christmas Eve";
+  if(m===11&&day===25) return "Christmas Day";
+  if(m===11&&day===26) return "Boxing Day";
+  return null;
 }
 
 // ============================================================================
@@ -396,16 +454,35 @@ function makeTrip(kind){
 
 // Run pricing + the PER-TRIP wrapper (gratuity, discount, add-ons) → subtotal.
 // Per spec: gratuity & discount both off the base IN PARALLEL. Add-ons add on top.
+// Per-trip pipeline (exact order, per spec):
+//   1. base = time-rate + late-night        (late-night is service revenue → in base, gets gratuity)
+//   2. gratuity = base × gratuity%           (on base only)
+//   3. discount = base × discount%           (parallel, off base)
+//   4. holiday  = base × holiday%            (derived FROM base, but added OUTSIDE gratuity)
+//   5. pass-throughs = flat reimbursements   (gate pass, tolls, parking — no markup)
+//   subtotal = base + gratuity − discount + holiday + pass-throughs
 function computeTrip(trip){
   const p=priceTrip(trip);
-  trip.base=p.base;
+  const base=p.base; // time-rate + late-night
+  trip.base=base;
   trip.note=p.note;
-  const grat=p.base*(trip.gratuityPct/100);
-  const disc=p.base*(trip.discountPct/100);
-  const addonTotal=(trip.addons||[]).reduce((s,a)=>s+(+a.amount||0),0);
-  trip.subtotal=p.base+grat-disc+addonTotal;
+  // gratuity & discount — on base only (NOT on holiday, NOT on pass-throughs)
+  const grat=base*(trip.gratuityPct/100);
+  const disc=base*(trip.discountPct/100);
+  // holiday — a % OF base, but added outside the gratuity basis
+  const holidayAmt = p.holidayPct>0 ? base*p.holidayPct : 0;
+  trip._holidayName=p.holidayName;
+  trip._holidayAmt=holidayAmt;
+  trip._holidayPct=p.holidayPct;
+  // pass-throughs — flat, never marked up (auto-detected Kiawah gate + manual add-ons)
+  const autoPass=(p.passthroughs||[]);
+  const manualPass=(trip.addons||[]);
+  const allPass=[...autoPass,...manualPass];
+  const passTotal=allPass.reduce((s,a)=>s+(+a.amount||0),0);
+  trip.subtotal=base+grat-disc+holidayAmt+passTotal;
   trip._priceLines=p.lines;
-  trip._grat=grat; trip._disc=disc; trip._addonTotal=addonTotal;
+  trip._grat=grat; trip._disc=disc;
+  trip._passthroughs=allPass; trip._passTotal=passTotal;
   return trip;
 }
 
@@ -476,6 +553,33 @@ function tripBodyHTML(trip){
     + '<div class="hint">'+billNote+' Click <strong>Live drive times</strong> to fill std/busy from Google (geocoded to the exact venue); the model prices on their median. Override manually if needed.</div>';
 }
 
+// Build the detailed per-trip breakdown (planner-style line items) from computeTrip's captured data.
+function tripBreakdownHTML(trip){
+  if(!trip.clientFacing) return '';
+  const lines=trip._priceLines||[];
+  let rows='';
+  lines.forEach(l=>{
+    const val = (l.txt!=null) ? l.txt : (l.val!=null ? M(l.val) : '');
+    rows+=`<div class="bd-line${l.sub?' sub':''}"><span>${l.lbl}</span><span>${val}</span></div>`;
+  });
+  // gratuity & discount — on base (time-rate + late-night) ONLY
+  if(trip._grat>0) rows+=`<div class="bd-line"><span>Gratuity (+${trip.gratuityPct}% of base)</span><span>${M(trip._grat)}</span></div>`;
+  if(trip._disc>0) rows+=`<div class="bd-line discount"><span>Trip discount (−${trip.discountPct}% of base)</span><span>−${M(trip._disc)}</span></div>`;
+  // holiday — % of base, but OUTSIDE the gratuity basis (no gratuity on it)
+  if(trip._holidayAmt>0){
+    rows+=`<div class="bd-line"><span>Holiday surcharge (+30% of base${trip._holidayName?' · '+trip._holidayName:''})</span><span>${M(trip._holidayAmt)}</span></div>`;
+  }
+  // pass-throughs — flat reimbursements, never marked up
+  if(trip._passthroughs&&trip._passthroughs.length){
+    rows+=`<div class="bd-line sub" style="padding-top:6px;border-top:1px dotted var(--line);"><span style="font-style:italic;">Pass-throughs (no gratuity)</span><span></span></div>`;
+    trip._passthroughs.forEach(a=>{
+      rows+=`<div class="bd-line"><span>${a.label||'item'}${a.auto?' (auto)':''}</span><span>${M(+a.amount||0)}</span></div>`;
+    });
+  }
+  rows+=`<div class="bd-line total"><span>Trip subtotal</span><span>${M(trip.subtotal)}</span></div>`;
+  return `<details class="breakdown"><summary>Show breakdown</summary><div class="bd-body">${rows}</div></details>`;
+}
+
 function renderTrips(){
   const list=$('tripList');
   list.innerHTML='';
@@ -501,7 +605,7 @@ function renderTrips(){
         </div>
         <button class="x-btn" data-del="${trip.id}" title="Remove trip">&times;</button>
       </div>
-      <div class="trip-body">${tripBodyHTML(trip)}</div>
+      <div class="trip-body">${tripBodyHTML(trip)}${tripBreakdownHTML(trip)}</div>
       ${subline}
     `;
     list.appendChild(card);
@@ -594,6 +698,15 @@ $('tripList').addEventListener('input',e=>{
   trip[f]= numeric.includes(f) ? (+e.target.value||0) : e.target.value;
   computeTrip(trip);
   refreshSubtotalUI(trip);
+  // refresh the breakdown body in place if it's expanded (preserves focus on the input)
+  const bd=card.querySelector('.breakdown');
+  if(bd && bd.open){
+    const fresh=document.createElement('div');
+    fresh.innerHTML=tripBreakdownHTML(trip);
+    const newBody=fresh.querySelector('.bd-body');
+    const oldBody=bd.querySelector('.bd-body');
+    if(newBody&&oldBody) oldBody.innerHTML=newBody.innerHTML;
+  }
   renderSummary();
 });
 
