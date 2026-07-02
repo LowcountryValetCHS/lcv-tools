@@ -85,6 +85,25 @@
   .bd-line.sub{font-size:11.5px;color:#7a857f;padding-left:8px;}
   .bd-line.discount{color:#2f7d50;}
   .bd-line.total{font-weight:700;color:var(--ink);border-bottom:none;border-top:1px solid var(--line);margin-top:4px;padding-top:6px;}
+  .dew-banner{background:#f1e9d8;border:1px solid var(--brass);border-radius:4px;padding:8px 11px;font-size:11.5px;color:var(--brass-deep);font-weight:600;margin-bottom:12px;}
+  .bus-rate{margin-top:10px;padding:8px 11px;background:var(--marsh-light);border:1px solid var(--brass);border-radius:4px;font-size:12.5px;color:var(--marsh);}
+  .bus-factors{color:var(--brass-deep);font-size:11px;}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+  .otr-analysis{margin-top:12px;}
+  .otr-verdict{font-size:12.5px;font-weight:700;padding:8px 11px;border-radius:4px;margin-bottom:8px;}
+  .otr-verdict.ok{background:#e7f2ea;color:#2f7d50;border:1px solid #99c7ab;}
+  .otr-verdict.warn{background:#fbe7e2;color:#a8442a;border:1px solid #d9a08e;}
+  .otr-viol{font-size:12px;color:#a8442a;margin:2px 0 2px 4px;}
+  .otr-opts{margin-top:10px;display:flex;flex-direction:column;gap:8px;}
+  .otr-opt{border:1px solid var(--line);border-radius:5px;padding:9px 11px;background:#fcfaf4;}
+  .otr-opt.rec{border-color:var(--marsh);border-width:2px;background:#f2f7f4;}
+  .otr-opt.illegal{opacity:.6;background:#f6f0ee;}
+  .otr-opt-head{font-size:13px;font-weight:700;color:var(--ink);}
+  .rec-badge{font-size:10px;background:var(--marsh);color:#fff;padding:2px 7px;border-radius:999px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;}
+  .otr-opt-meta{font-size:11.5px;color:var(--ink-soft);margin-top:2px;}
+  .otr-opt-price{font-size:14px;font-weight:700;color:var(--marsh);margin-top:4px;}
+  .otr-ach{font-size:11px;font-weight:500;color:var(--ink-soft);}
+  .otr-opt-note{font-size:11px;color:#7a857f;margin-top:4px;line-height:1.4;}
 </style>
 </head>
 <body>
@@ -132,7 +151,7 @@
               <option value="retail">Retail</option>
               <option value="affiliate_local">Affiliate — local (−20%)</option>
               <option value="affiliate_non">Affiliate — non-local (−10%)</option>
-              <option value="gct">GCT (all-inclusive)</option>
+              <option value="gct">GCT (+20% / −20%, card)</option>
               <option value="leros">Leros (+10% / −10%)</option>
               <option value="dewberry">Dewberry (ACH card rate)</option>
               <option value="dunlin">Dunlin (+7.5% / −7.5%, ACH)</option>
@@ -163,6 +182,9 @@
         <button class="addbtn" data-add="toairport" type="button">+ To Airport</button>
         <button class="addbtn" data-add="p2p" type="button">+ Point-to-Point</button>
         <button class="addbtn" data-add="hourly" type="button">+ Hourly</button>
+        <button class="addbtn" data-add="bus" type="button">+ Bus / Motorcoach</button>
+        <button class="addbtn" data-add="vintage" type="button">+ Vintage / Classic</button>
+        <button class="addbtn" data-add="otr" type="button">+ Over-the-Road</button>
         <button class="addbtn" data-add="greeter" type="button">+ Greeter</button>
         <button class="addbtn ghost" data-add="standby" type="button">+ Standby (internal)</button>
         <button class="addbtn ghost" data-add="secondary" type="button">+ Secondary Driver (internal)</button>
@@ -202,6 +224,363 @@ const STD={ sedan:{floor:120,r2:95,r4:95,name:'Luxury Sedan'}, fsuv:{floor:140,r
   vsuv:{floor:150,r2:130,r4:130,name:'VIP SUV'}, svan:{floor:220,r2:190,r4:175,name:'Sprinter Van'}, slimo:{floor:300,r2:200,r4:185,name:'Sprinter Limo'} };
 const GREETER_RATE=50, GREETER_MIN_HRS=3; // per SOP: $50/hr, 3hr min, +20% grat
 
+// ============================================================================
+// VINTAGE / CLASSIC CARS — tiered hourly (event/experience product).
+// First service hour (by vehicle) + consecutive hrs @ $225 + non-consecutive @ $450.
+// Dead-head (round-trip CHS, 15-min/leg waiver) bills at the consecutive rate ($225/hr).
+// One first-hour charge per day, 1hr min. Standard wrapper (20% grat, 4% card). Holiday + late-night apply.
+const VINTAGE = {
+  hardtop:     {name:'Classic Hardtop',     first:630, consec:225, nonconsec:450},
+  convertible: {name:'Classic Convertible', first:760, consec:225, nonconsec:450},
+  classicvan:  {name:'Classic Van',         first:860, consec:225, nonconsec:450}
+};
+const VINTAGE_CONSEC_RATE=225, VINTAGE_NONCONSEC_RATE=450;
+
+// ============================================================================
+// OVER-THE-ROAD / MULTIDAY — cost-up (not hourly). Buses on long charters.
+// Total = Driver + Fuel + Lodging + Per diem + Vehicle day rate + Tolls, then wrapper.
+// FMCSA duty-day / relief-driver DETERMINATION is planner work; here the agent enters params.
+const OTR_DRIVER_DAY=450;      // per driver per committed day
+const OTR_MPG=6.5;             // motorcoach diesel mileage
+const OTR_DIESEL=3.90;         // $/gal (review periodically)
+const OTR_LODGING_NIGHT=150;   // per driver per overnight
+const OTR_PERDIEM_DAY=65;      // per driver per committed day
+const OTR_VEHICLE_DAY={ peak:1000, standard:900, slow:800, dead:700 }; // by season, × committed days
+
+// ============================================================================
+// OTR FEASIBILITY PLANNER (advisory) — the operational-requirements brain.
+// Build a day-by-day timeline from agent leg estimates, test each day against
+// FMCSA limits (≤10h driving / ≤15h on-duty / 8h rest, measured from Hollywood),
+// and when a day is infeasible single-driver, generate + price the legal options.
+// Reasoning-focused: agent enters leg drive HOURS; live-Maps wires in later.
+// ============================================================================
+const FMCSA_MAX_DRIVE=10, FMCSA_MAX_ONDUTY=15, FMCSA_REST=8;
+
+// Pure cost-up pricer for a planner option (mirrors the OTR trip pricing).
+function otrPriceOption(opt, miles, season, tolls){
+  const driver=OTR_DRIVER_DAY*opt.days*opt.drivers;
+  const fuel=(miles/OTR_MPG)*OTR_DIESEL;
+  const lodging=OTR_LODGING_NIGHT*opt.overnights*opt.drivers;
+  const perdiem=OTR_PERDIEM_DAY*opt.days*opt.drivers;
+  const vehicleDay=(OTR_VEHICLE_DAY[season]||900)*opt.days;
+  const base=driver+fuel+lodging+perdiem+vehicleDay+(opt.shuttle||0);
+  const grat=base*0.20;
+  const cardTotal=(base+grat)*1.04 + (tolls||0);
+  const achTotal=(base+grat) + (tolls||0);
+  return { base, grat, tolls:tolls||0, cardTotal, achTotal,
+    components:{driver,fuel,lodging,perdiem,vehicleDay,shuttle:opt.shuttle||0} };
+}
+
+// A "day" = { label, driveHrs, onDutyHrs (driving + load/unload/service on-duty) }
+// Returns feasibility per day + trip-level analysis.
+function otrFeasibility(days){
+  const dayResults = days.map(d=>{
+    const driveOK = d.driveHrs <= FMCSA_MAX_DRIVE;
+    const dutyOK  = d.onDutyHrs <= FMCSA_MAX_ONDUTY;
+    return {
+      ...d,
+      driveOK, dutyOK,
+      feasible: driveOK && dutyOK,
+      violation: !driveOK ? 'driving '+d.driveHrs.toFixed(1)+'h > 10h limit'
+               : !dutyOK  ? 'on-duty '+d.onDutyHrs.toFixed(1)+'h > 15h limit'
+               : null
+    };
+  });
+  const infeasibleDays = dayResults.filter(d=>!d.feasible);
+  return { dayResults, feasible: infeasibleDays.length===0, infeasibleDays };
+}
+
+// Given the base OTR params + the feasibility result, generate the legal options.
+// Each option returns {key,label,legal,days,overnights,drivers,shuttle,note}.
+function otrOptions(base){
+  // base = {days, overnights, miles, season, feasibility, hasTenHourDay, sameDayArrival}
+  const opts=[];
+  const feasible = base.feasibility.feasible;
+
+  // Option 1: single driver as-planned
+  opts.push({
+    key:'single', label:'Single driver (as planned)',
+    legal: feasible,
+    days:base.days, overnights:base.overnights, drivers:1, shuttle:0,
+    note: feasible ? 'Every day fits one FMCSA duty day.'
+                   : 'Not legal: '+base.feasibility.infeasibleDays.map(d=>d.label+' — '+d.violation).join('; ')+'.'
+  });
+
+  if(!feasible){
+    // Option 2: relief driver staged (adds a driver across committed days; requires same-day arrival)
+    opts.push({
+      key:'relief', label:'Relief driver (staged ahead)',
+      legal:true,
+      days:base.days, overnights:base.overnights, drivers:2, shuttle:base.reliefShuttle||175,
+      note:'2nd driver pre-rested 8h at the handoff point. Doubles driver/lodging/per-diem; adds a positioning shuttle. Needed when same-day arrival is required.'
+    });
+    // Option 3: staged bus — position the night before, big drive becomes a standalone day.
+    // Adds one committed day + one overnight, stays single driver.
+    opts.push({
+      key:'staged', label:'Bus staged night before (+1 day)',
+      legal:true,
+      days:base.days+1, overnights:base.overnights+1, drivers:1, shuttle:0,
+      note:'Driver positions to the staging point on a light day, rests overnight, so the long drive is a clean standalone duty day. One extra committed day + overnight, single driver.'
+    });
+  }
+  return opts;
+}
+
+// ============================================================================
+// BUS / MOTORCOACH MODEL — demand-multiplied hourly (retail).
+// Effective /hr = base × season × day × time, floored at 70% of base.
+// Committed hours (service + dead-head + any gap) × effective rate = base fare.
+// Standard wrapper (20% grat, 4% card). Dead-head = round-trip CHS, 15-min/leg waiver.
+const BUSES = {
+  mc3241: {name:'32/41 Motorcoach', base:230},
+  mc4957: {name:'49/57 Motorcoach', base:299},
+  midcentury: {name:'Mid-Century Bus', base:345}
+};
+const BUS_SEASON = { peak:1.00, standard:0.90, slow:0.80, dead:0.70 };
+const BUS_DAY    = { sat:1.00, fri:0.90, sun:0.85, weekday:0.80 };
+const BUS_TIME   = { prime:1.00, offprime:0.85 };
+const BUS_FLOOR  = 0.70;
+
+function busSeasonOf(month){ // month 0-11
+  if([3,4,9].includes(month)) return 'peak';        // Apr, May, Oct
+  if([2,5,8,10].includes(month)) return 'standard'; // Mar, Jun, Sep, Nov
+  if([1,6,7,11].includes(month)) return 'slow';     // Feb, Jul, Aug, Dec
+  return 'dead';                                     // Jan
+}
+function busDayOf(dow){ // 0=Sun..6=Sat
+  if(dow===6) return 'sat';
+  if(dow===5) return 'fri';
+  if(dow===0) return 'sun';
+  return 'weekday';
+}
+function busTimeOf(timeStr){
+  if(!timeStr) return 'prime';
+  const h=+timeStr.split(':')[0];
+  return (h>=14) ? 'prime' : 'offprime'; // prime = 2pm–midnight; mornings = off-prime
+}
+// Minimum committed hours: 6 on prime high-demand (Sat, or Fri in peak), 2 on off-prime/slow/dead, else 4.
+function busMinHours(season, day, time){
+  const primeHighDemand = (day==='sat') || (day==='fri' && season==='peak');
+  if(primeHighDemand && time==='prime') return 6;
+  if(time==='offprime' || season==='slow' || season==='dead') return 2;
+  return 4;
+}
+
+// ============================================================================
+// DEWBERRY PARTNER RATES (2026) — verified from Drive sheet.
+// Rates are FINAL to client: NO gratuity, NO discount (baked in). Holiday +
+// pass-throughs + meet&greet still apply. ACH only (no card fee).
+// Vehicle columns: col0 = Volvo/Escalade/Suburban (sedan/SUV share), col1 = Sprinter Shuttle, col2 = Sprinter Limo.
+// Engine vehicle → Dewberry column index:
+const DEW_VEHCOL = { sedan:0, fsuv:0, vsuv:0, svan:1, slimo:2 };
+// LOCAL P2P (flat). 'HR' marks a "2hr min → hourly table" destination.
+const DEW_LOCAL = {
+  chs:        {name:'CHS',                 r:[100,195,300]},
+  kchs:       {name:'KCHS (airport)',      r:[150,250,380]},
+  jzi:        {name:'JZI',                 r:[180,380,490]},
+  beaches:    {name:'Beaches',             r:'HR'},
+  coliseum:   {name:'Coliseum',            r:'HR'},
+  creditone:  {name:'Credit One',          r:'HR'},
+  plantations:{name:'Plantations',         r:'HR'},
+  dunlin:     {name:'Dunlin',              r:[180,350,380]},
+  sanctuary:  {name:'Sanctuary (gate incl)',r:[213,373,403], gateIncluded:true}
+};
+// TRAVEL P2P (long-distance flat).
+const DEW_TRAVEL = {
+  beaufort:   {name:'Beaufort',     r:[425,600,700]},
+  bluffton:   {name:'Bluffton',     r:[500,600,700]},
+  hiltonhead: {name:'Hilton Head',  r:[500,750,875]},
+  savannah:   {name:'Savannah',     r:[500,750,875]},
+  columbia:   {name:'Columbia',     r:[450,675,790]},
+  charlotte:  {name:'Charlotte',    r:[900,1350,1575]},
+  myrtle:     {name:'Myrtle Beach', r:[550,825,950]}
+};
+// HOURLY (per vehicle col × hour 2..10). Index by hour-2.
+const DEW_HOURLY = {
+  0:[190,285,380,475,570,665,760,855,950],    // col0 sedan/SUV
+  1:[350,525,600,750,900,1050,1200,1350,1500],// col1 shuttle
+  2:[380,570,700,875,1050,1225,1400,1575,1750]// col2 limo
+};
+// ============================================================================
+// GCT AFFILIATE RATES (2026) — verified from sheet.
+// Structure differs: ZONE table for airport trips; HOURLY for everything else
+// (P2P collapses to hourly, 2hr min). Wrapper: +20% grat / -20% discount (cancel),
+// PLUS 4% card fee (GCT pays by card — NOT ACH). Holiday + gate/tolls on top.
+// Vehicle cols: 0=Sedan, 1=SUV, 2=Van (both Sprinters). Mini(=mini coach) is bus-class → deferred.
+const GCT_ZONES = {
+  zone1:{name:'Zone 1 — Airport/N.Chas, Downtown, Daniel Is, Mt P', r:[125,150,275]},
+  zone2:{name:'Zone 2 — N Mt P, James Is/Folly, West Ashley, Sullivans, IOP', r:[130,195,300]},
+  zone3:{name:'Zone 3 — Kiawah, Johns Is, Seabrook', r:[175,235,390]}
+};
+// GCT hourly ("we charge them"), 2hr min. Flat per-hour by vehicle col → multiply by hours.
+const GCT_HOURLY_RATE = [95,110,150]; // Sedan, SUV, Van per hour
+// GCT vehicle → column (0 Sedan / 1 SUV / 2 Van=Sprinter Shuttle).
+// GCT does NOT carry Sprinter Limo — slimo is intentionally absent (unavailable, not priced as Van).
+const GCT_VEHCOL = { sedan:0, fsuv:1, vsuv:1, svan:2 };
+
+function gctZoneOpts(sel){
+  return '<option value="">— choose zone —</option>' +
+    Object.keys(GCT_ZONES).map(z=>'<option value="'+z+'"'+(z===sel?' selected':'')+'>'+GCT_ZONES[z].name+'</option>').join('');
+}
+
+const DEW_MEET_GREET=25; // inside-airport, sedans/SUVs
+
+// ============================================================================
+// DUNLIN PARTNER RATES (2026) — verified from Drive sheet.
+// Same mechanism as Dewberry, but LA entry applies +7.5% grat / -7.5% discount
+// (shown as line items that cancel to net zero). Total = flat rate.
+// Sanctuary & Ocean Course are SEPARATE gate-included destinations.
+const DUN_LOCAL = {
+  chs:        {name:'CHS',                  r:[195,360,450]},
+  kchs:       {name:'KCHS (airport)',       r:[225,360,450]},
+  jzi:        {name:'JZI',                  r:[225,360,450]},
+  downtown:   {name:'Downtown',             r:[195,360,450]},
+  coliseum:   {name:'Coliseum',             r:[240,'HR','HR']}, // sed/SUV flat; shuttle/limo hourly
+  creditone:  {name:'Credit One',           r:[240,'HR','HR']},
+  plantations:{name:'Plantations',          r:'HR'},
+  beaches:    {name:'Beaches',              r:'HR'},
+  sanctuary:  {name:'Sanctuary',            r:[243,383,473], gateIncluded:true},
+  oceancourse:{name:'Ocean Course',         r:[283,443,543], gateIncluded:true}
+};
+const DUN_TRAVEL = {
+  beaufort:   {name:'Beaufort',     r:[500,750,950]},
+  bluffton:   {name:'Bluffton',     r:[600,950,1100]},
+  hiltonhead: {name:'Hilton Head',  r:[600,950,1100]},
+  savannah:   {name:'Savannah',     r:[600,950,1100]},
+  columbia:   {name:'Columbia',     r:[600,950,1100]},
+  charlotte:  {name:'Charlotte',    r:[1100,1650,1850]},
+  myrtle:     {name:'Myrtle Beach', r:[1100,1650,1850]}
+};
+const DUN_HOURLY = {
+  0:[285,380,475,570,665,760,855,950,1045],
+  1:[525,600,750,900,1050,1200,1350,1500,1650],
+  2:[570,700,875,1050,1225,1400,1575,1750,1925]
+};
+
+// ============================================================================
+// PARTNER CONFIG — generalizes Dewberry/Dunlin (and future partners).
+// gratPct/discPct: shown as canceling line items (Dunlin 7.5; Dewberry 0 = no lines).
+// ============================================================================
+const PARTNERS = {
+  dewberry: {name:'Dewberry', local:DEW_LOCAL, travel:DEW_TRAVEL, hourly:DEW_HOURLY, gratPct:0,   discPct:0,  cardFee:false},
+  dunlin:   {name:'Dunlin',   local:DUN_LOCAL, travel:DUN_TRAVEL, hourly:DUN_HOURLY, gratPct:7.5, discPct:7.5, cardFee:false},
+  gct:      {name:'GCT', zoneModel:true, zones:GCT_ZONES, hourlyRate:GCT_HOURLY_RATE, gratPct:20, discPct:20, cardFee:true}
+};
+function isPartnerRouting(r){ return !!PARTNERS[r]; }
+
+// Generalized partner lookup (replaces dew-specific lookups).
+function partnerLookup(partnerKey, destKey, vehicle){
+  const P=PARTNERS[partnerKey]; if(!P) return null;
+  const col = DEW_VEHCOL[vehicle] != null ? DEW_VEHCOL[vehicle] : 0;
+  const d = P.local[destKey] || P.travel[destKey];
+  if(!d) return null;
+  if(d.r === 'HR') return {hourly:true, name:d.name};
+  const cell = d.r[col];
+  if(cell === 'HR') return {hourly:true, name:d.name}; // this vehicle redirects to hourly
+  return {amount:cell, gateIncluded:!!d.gateIncluded, name:d.name};
+}
+function partnerHourly(partnerKey, vehicle, hours){
+  const P=PARTNERS[partnerKey]; if(!P) return 0;
+  const col = DEW_VEHCOL[vehicle] != null ? DEW_VEHCOL[vehicle] : 0;
+  const h = Math.max(2, Math.min(10, Math.round(hours||2)));
+  return P.hourly[col][h-2];
+}
+// quote-level routing (set once in the wrapper)
+function currentRouting(){ return (typeof document!=='undefined' && document.getElementById('routing')) ? document.getElementById('routing').value : 'retail'; }
+
+// Partner pricing (Dewberry/Dunlin/…): flat rate by destination (or hourly).
+// gratPct/discPct come from the partner config and are surfaced so computeTrip can show
+// canceling line items. Holiday (30% of base, outside grat), pass-throughs, and
+// meet&greet ($25 inside-airport sedans/SUVs) still apply.
+function pricePartner(trip, k, partnerKey){
+  const P=PARTNERS[partnerKey];
+  const lines=[];
+  const veh=trip.vehicle||'sedan';
+
+  // ---- GCT: zone table for airport; hourly for everything else ----
+  if(P.zoneModel){
+    let base=0, destName='';
+    // GCT does not carry Sprinter Limo — flag unavailable rather than mis-pricing.
+    if(GCT_VEHCOL[veh]==null){
+      lines.push({lbl:'GCT does not carry '+vehLabel(veh)+' — choose Sedan, SUV, or Sprinter Shuttle', val:0, sub:true});
+      return {base:0, lines, note:'GCT — '+vehLabel(veh)+' unavailable', holidayPct:0, holidayName:null, passthroughs:[], partner:partnerKey, partnerGratPct:P.gratPct, partnerDiscPct:P.discPct, unavailable:true};
+    }
+    const col = GCT_VEHCOL[veh];
+    if(isAirportKind(k)){
+      const z=GCT_ZONES[trip.gctZone];
+      if(!z){
+        lines.push({lbl:'Pick a GCT zone', val:0, sub:true});
+        return {base:0, lines, note:'GCT — no zone', holidayPct:0, holidayName:null, passthroughs:[], partner:partnerKey, partnerGratPct:P.gratPct, partnerDiscPct:P.discPct};
+      }
+      base=z.r[col];
+      destName=z.name.split(' — ')[0];
+      lines.push({lbl:'GCT '+destName+' ('+vehLabel(veh)+', zone flat)', val:base, sub:true});
+    } else {
+      // P2P or hourly → hourly rate × hours, 2hr min
+      const hrs=Math.max(2, +trip.hours||2);
+      const rate=P.hourlyRate[col];
+      base=rate*hrs;
+      destName=(k==='hourly'?'Hourly':'P2P→hourly')+' '+hrs+'h';
+      lines.push({lbl:'GCT hourly ('+hrs+'h × $'+rate+' · '+vehLabel(veh)+')', val:base, sub:true});
+    }
+    // inside-airport greet ($25 to base, sedans/SUVs)
+    if(isAirportKind(k) && trip.meetGreet && (veh==='sedan'||veh==='fsuv'||veh==='vsuv')){
+      base+=DEW_MEET_GREET;
+      lines.push({lbl:'Inside-airport greet (service add-on)', val:DEW_MEET_GREET, sub:true});
+    }
+    const holidayName=holidayOf(trip.date);
+    const holidayPct = holidayName ? 0.30 : 0;
+    return {base, lines, note:'GCT · '+destName, holidayPct, holidayName, passthroughs:[],
+            partner:partnerKey, partnerGratPct:P.gratPct, partnerDiscPct:P.discPct};
+  }
+
+  let base=0, gateIncluded=false, destName='';
+  if(k==='hourly'){
+    const hrs=Math.max(2, +trip.hours||2);
+    base=partnerHourly(partnerKey, veh, hrs);
+    destName='Hourly '+hrs+'h';
+    lines.push({lbl:P.name+' hourly ('+hrs+'h · '+vehLabel(veh)+')', val:base, sub:true});
+  } else {
+    const look=partnerLookup(partnerKey, trip.dewDest, veh);
+    if(!look){
+      lines.push({lbl:'Pick a '+P.name+' destination', val:0, sub:true});
+      return {base:0, lines, note:P.name+' — no destination', holidayPct:0, holidayName:null, passthroughs:[], partner:partnerKey, partnerGratPct:P.gratPct, partnerDiscPct:P.discPct};
+    }
+    if(look.hourly){
+      const hrs=Math.max(2, +trip.hours||2);
+      base=partnerHourly(partnerKey, veh, hrs);
+      destName=look.name+' (2hr min → hourly)';
+      lines.push({lbl:P.name+' '+look.name+' — 2hr min hourly ('+hrs+'h)', val:base, sub:true});
+    } else {
+      base=look.amount;
+      gateIncluded=look.gateIncluded;
+      destName=look.name;
+      lines.push({lbl:P.name+' '+look.name+' ('+vehLabel(veh)+', flat)', val:base, sub:true});
+    }
+  }
+
+  // MEET & GREET (inside-airport greet) — a SERVICE add-on, $25 added to BASE (not a pass-through).
+  // Airport pickups only, sedans/SUVs. Curbside is standard (no charge).
+  if(isAirportKind(k) && trip.meetGreet && (veh==='sedan'||veh==='fsuv'||veh==='vsuv')){
+    base+=DEW_MEET_GREET;
+    lines.push({lbl:'Inside-airport greet (service add-on)', val:DEW_MEET_GREET, sub:true});
+  }
+
+  // holiday (30% of base, outside gratuity) — still applies to partner rate
+  const holidayName=holidayOf(trip.date);
+  const holidayPct = holidayName ? 0.30 : 0;
+
+  // pass-throughs: Kiawah gate (included in rate for Sanctuary/Ocean Course)
+  const passthroughs=[];
+  if(gateIncluded){
+    passthroughs.push({label:'Kiawah gate pass (included in rate)', amount:0, auto:true, included:true});
+  }
+
+  return {base, lines, note:P.name+' · '+destName, holidayPct, holidayName, passthroughs,
+          partner:partnerKey, partnerGratPct:P.gratPct, partnerDiscPct:P.discPct};
+}
+function vehLabel(v){ return STD[v]?STD[v].name:v; }
+
 function tierRate(veh,hrs){ return hrs>=4?STD[veh].r4:STD[veh].r2; }
 function isAirportKind(kind){ return kind==='fromairport'||kind==='toairport'; }
 
@@ -217,6 +596,89 @@ function priceTrip(trip){
   const lines=[];
   const k=trip.kind;
 
+  // ---- OVER-THE-ROAD / MULTIDAY: cost-up (driver + fuel + lodging + per diem + vehicle day rate) ----
+  if(k==='otr'){
+    const days=Math.max(1, +trip.otrDays||1);
+    const overnights=Math.max(0, +trip.otrOvernights||0);
+    const miles=Math.max(0, +trip.otrMiles||0);
+    const drivers=Math.max(1, +trip.otrDrivers||1);
+    const season=trip.otrSeason||'standard';
+    const driver=OTR_DRIVER_DAY*days*drivers;
+    const fuel=(miles/OTR_MPG)*OTR_DIESEL;
+    const lodging=OTR_LODGING_NIGHT*overnights*drivers;
+    const perdiem=OTR_PERDIEM_DAY*days*drivers;
+    const vehicleDay=(OTR_VEHICLE_DAY[season]||900)*days;
+    const tolls=Math.max(0, +trip.otrTolls||0);
+    const reliefShuttle=drivers>1?Math.max(0, +trip.otrReliefShuttle||0):0;
+    const base=driver+fuel+lodging+perdiem+vehicleDay+reliefShuttle; // tolls are a pass-through
+    lines.push({lbl:'Driver ($'+OTR_DRIVER_DAY+' × '+days+'d'+(drivers>1?' × '+drivers+' drivers':'')+')', val:driver, sub:true});
+    lines.push({lbl:'Fuel ('+miles+'mi ÷ '+OTR_MPG+' × $'+OTR_DIESEL+')', val:fuel, sub:true});
+    lines.push({lbl:'Lodging ($'+OTR_LODGING_NIGHT+' × '+overnights+'n'+(drivers>1?' × '+drivers:'')+')', val:lodging, sub:true});
+    lines.push({lbl:'Per diem ($'+OTR_PERDIEM_DAY+' × '+days+'d'+(drivers>1?' × '+drivers:'')+')', val:perdiem, sub:true});
+    lines.push({lbl:'Vehicle day rate ($'+(OTR_VEHICLE_DAY[season]||900)+' × '+days+'d · '+season+')', val:vehicleDay, sub:true});
+    if(reliefShuttle>0) lines.push({lbl:'Relief-driver positioning shuttle', val:reliefShuttle, sub:true});
+    lines.push({lbl:'Cost-up base', val:base});
+    // tolls/permits = pass-through (no markup, no gratuity)
+    const passthroughs=[];
+    if(tolls>0) passthroughs.push({label:'Tolls / permits', amount:tolls, auto:false});
+    return {base, lines, note:(BUSES[trip.otrBus]?BUSES[trip.otrBus].name:'Motorcoach')+' · '+days+'-day OTR', holidayPct:0, holidayName:null, passthroughs};
+  }
+
+  // ---- VINTAGE / CLASSIC: tiered first-hour + consecutive/non-consecutive + dead-head ----
+  if(k==='vintage'){
+    const v=VINTAGE[trip.vintageType]||VINTAGE.convertible;
+    const svcHrs=Math.max(1, +trip.vintageServiceHrs||1);   // 1hr min
+    const nonconsecHrs=Math.max(0, +trip.vintageNonconsecHrs||0);
+    // consecutive service = first hour + remaining consecutive hours (minus any non-consecutive blocks)
+    const consecHrs=Math.max(0, svcHrs-1-nonconsecHrs);      // hours after the first, that are consecutive
+    const deadheadHrs=Math.max(0, ((+trip.vintageDeadheadMin||0)-15)/60)*2; // round-trip, 15-min/leg waiver
+    let base=v.first;                                        // 1st service hour
+    const parts=['1st hr $'+v.first];
+    if(consecHrs>0){ base+=consecHrs*VINTAGE_CONSEC_RATE; parts.push(consecHrs.toFixed(1)+'h consec × $'+VINTAGE_CONSEC_RATE); }
+    if(nonconsecHrs>0){ base+=nonconsecHrs*VINTAGE_NONCONSEC_RATE; parts.push(nonconsecHrs.toFixed(1)+'h non-consec × $'+VINTAGE_NONCONSEC_RATE); }
+    if(deadheadHrs>0){ base+=deadheadHrs*VINTAGE_CONSEC_RATE; parts.push(deadheadHrs.toFixed(2)+'h dead-head × $'+VINTAGE_CONSEC_RATE); }
+    lines.push({lbl:v.name+' service', val:null, txt:svcHrs.toFixed(1)+'h'+(nonconsecHrs>0?' ('+nonconsecHrs.toFixed(1)+'h non-consec)':''), sub:true});
+    lines.push({lbl:'Base ('+parts.join(' + ')+')', val:base});
+    // late-night (in base, service revenue) + holiday
+    if(isLateNight(trip.time)){
+      const lh=Math.max(35, svcHrs*35);
+      base+=lh;
+      lines.push({lbl:'Late-night surcharge ($35/hr · $35 min)', val:lh, sub:true});
+    }
+    const holidayName=holidayOf(trip.date);
+    const holidayPct = holidayName ? 0.30 : 0;
+    return {base, lines, note:v.name+' · '+svcHrs.toFixed(1)+'h', holidayPct, holidayName, passthroughs:[]};
+  }
+
+  // ---- BUS / MOTORCOACH: demand-multiplied hourly ----
+  if(k==='bus'){
+    const b=BUSES[trip.busType]||BUSES.mc4957;
+    const d=trip.date?new Date(trip.date+'T00:00:00'):null;
+    const season = trip.busSeasonOv || (d?busSeasonOf(d.getMonth()):'peak');
+    const day    = trip.busDayOv    || (d?busDayOf(d.getDay()):'sat');
+    const time   = trip.busTimeOv   || busTimeOf(trip.time);
+    // effective rate = base × season × day × time, floored at 70% of base
+    let factor = BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time];
+    factor = Math.max(factor, BUS_FLOOR);
+    const rate = b.base*factor;
+    const minH = busMinHours(season, day, time);
+    const reqH = +trip.busHours||0;
+    const hrs = Math.max(minH, reqH);
+    const base = rate*hrs;
+    lines.push({lbl:'Committed hrs', val:null, txt:reqH.toFixed(1)+(hrs>reqH?' → '+hrs.toFixed(1)+' (min)':''), sub:true});
+    lines.push({lbl:'Effective rate ($'+b.base+' × '+factor.toFixed(3)+' = $'+rate.toFixed(2)+'/hr)', val:null, txt:season+'/'+day+'/'+time, sub:true});
+    lines.push({lbl:'Base ('+hrs.toFixed(1)+'h × $'+rate.toFixed(2)+')', val:base});
+    // holiday + Kiawah gate ($43 for buses) as pass-through
+    const holidayName=holidayOf(trip.date);
+    const holidayPct = holidayName ? 0.30 : 0;
+    const passthroughs=[];
+    const KIAWAH=['kiawah','sanctuary','oceancourse'];
+    if(KIAWAH.includes(trip.fromKey)||KIAWAH.includes(trip.toKey)){
+      passthroughs.push({label:'Kiawah gate pass (bus)', amount:43, auto:true});
+    }
+    return {base, lines, note:b.name+' · '+hrs.toFixed(1)+'h', holidayPct, holidayName, passthroughs, busFactor:{season,day,time,rate,factor}};
+  }
+
   // ---- GREETER: $50/hr, 3hr min (gratuity applied at trip wrapper) ----
   if(k==='greeter'){
     const reqHrs=+trip.hours||0;
@@ -229,6 +691,11 @@ function priceTrip(trip){
   // ---- INTERNAL: standby / secondary driver (not client-billed) ----
   if(k==='standby'||k==='secondary'){
     return {base:0, lines:[{lbl:'Internal staffing reservation — not client-billed', val:0, sub:true}], note:'internal', holidayPct:0, holidayName:null, passthroughs:[]};
+  }
+
+  // ---- PARTNER ROUTING (Dewberry/Dunlin/…): flat negotiated rate ----
+  if(isPartnerRouting(currentRouting()) && (isAirportKind(k)||k==='p2p'||k==='hourly')){
+    return pricePartner(trip, k, currentRouting());
   }
 
   // ---- STANDARD FLEET: From/To Airport + P2P + Hourly ----
@@ -421,6 +888,9 @@ const TRIP_TYPES={
   toairport:  {label:'To Airport',     clientFacing:true,  defGrat:20},
   p2p:        {label:'Point-to-Point', clientFacing:true,  defGrat:20},
   hourly:     {label:'Hourly',         clientFacing:true,  defGrat:20},
+  bus:        {label:'Bus / Motorcoach',clientFacing:true, defGrat:20}, // demand-multiplied hourly
+  vintage:    {label:'Vintage / Classic',clientFacing:true,defGrat:20}, // tiered first-hour + consecutive
+  otr:        {label:'Over-the-Road',   clientFacing:true, defGrat:20}, // multiday cost-up
   greeter:    {label:'Greeter',        clientFacing:true,  defGrat:20}, // $50/hr, 3hr min, +20%
   standby:    {label:'Standby',        clientFacing:false, defGrat:0},  // internal — emergency backup chauffeur
   secondary:  {label:'Secondary Driver',clientFacing:false,defGrat:0}   // internal — OTR FMCSA relief (usually auto-generated)
@@ -439,9 +909,25 @@ function makeTrip(kind){
     // pricing inputs
     vehicle:'sedan',
     hours:(kind==='greeter'?3:(kind==='hourly'?4:0)),
+    // bus inputs
+    busType:'mc4957', busHours:6,
+    busSeasonOv:'', busDayOv:'', busTimeOv:'', // optional manual overrides ('' = auto from date/time)
+    // vintage inputs
+    vintageType:'convertible', vintageServiceHrs:2, vintageNonconsecHrs:0, vintageDeadheadMin:40,
+    // OTR inputs
+    otrBus:'mc4957', otrDays:3, otrOvernights:2, otrMiles:540, otrSeason:'standard', otrDrivers:1,
+    otrTolls:0, otrReliefShuttle:0,
+    // OTR planner (advisory) — per-day drive/on-duty estimates
+    otrPlannerOn:false,
+    otrTimeline:[ {label:'Day 1', driveHrs:3, onDutyHrs:5}, {label:'Day 2', driveHrs:8, onDutyHrs:11} ],
+    otrSameDayArrival:true,
     fromKey:'none', toKey:'none',   // location dropdown selections
     driveStd:20, driveBusy:28,
     date:'', time:'14:00',
+    // partner-routing inputs (Dewberry etc.)
+    dewDest:'',          // Dewberry/Dunlin destination key when partner routing
+    gctZone:'',          // GCT zone key when routing=gct + airport trip
+    meetGreet:false,     // inside-airport meet & greet (+$25) for airport trips
     // money
     base:0,
     gratuityPct:t.defGrat,
@@ -463,18 +949,31 @@ function makeTrip(kind){
 //   subtotal = base + gratuity − discount + holiday + pass-throughs
 function computeTrip(trip){
   const p=priceTrip(trip);
-  const base=p.base; // time-rate + late-night
+  const base=p.base; // time-rate + late-night (or partner flat rate + greet)
   trip.base=base;
   trip.note=p.note;
-  // gratuity & discount — on base only (NOT on holiday, NOT on pass-throughs)
-  const grat=base*(trip.gratuityPct/100);
-  const disc=base*(trip.discountPct/100);
-  // holiday — a % OF base, but added outside the gratuity basis
+  const isPartner = !!p.partner;
+  trip._partnerFlat=isPartner;
+  trip._partner=p.partner||null;
+  // gratuity & discount:
+  //  - RETAIL: trip's own gratuity/discount %.
+  //  - PARTNER: the partner's configured %, shown as (often canceling) line items to mirror LA.
+  //    Dewberry = 0/0 (no lines). Dunlin = 7.5/7.5 (visible, cancel to net zero).
+  let grat, disc, gratPct, discPct;
+  if(isPartner){
+    gratPct=p.partnerGratPct||0; discPct=p.partnerDiscPct||0;
+    grat=base*(gratPct/100); disc=base*(discPct/100);
+  } else {
+    gratPct=trip.gratuityPct; discPct=trip.discountPct;
+    grat=base*(gratPct/100); disc=base*(discPct/100);
+  }
+  trip._gratPct=gratPct; trip._discPct=discPct;
+  // holiday — a % OF base, but added outside the gratuity basis (applies to partner rate too)
   const holidayAmt = p.holidayPct>0 ? base*p.holidayPct : 0;
   trip._holidayName=p.holidayName;
   trip._holidayAmt=holidayAmt;
   trip._holidayPct=p.holidayPct;
-  // pass-throughs — flat, never marked up (auto-detected Kiawah gate + manual add-ons)
+  // pass-throughs — flat, never marked up (auto-detected + manual add-ons)
   const autoPass=(p.passthroughs||[]);
   const manualPass=(trip.addons||[]);
   const allPass=[...autoPass,...manualPass];
@@ -488,6 +987,208 @@ function computeTrip(trip){
 
 // ---- Render the trip list with real inputs ----
 function vehOpts(sel){ return Object.keys(STD).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+STD[k].name+'</option>').join(''); }
+// GCT carries Sedan, SUV, and Sprinter Shuttle only — no Sprinter Limo.
+function vehOptsGCT(sel){ return Object.keys(STD).filter(k=>k!=='slimo').map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+STD[k].name+'</option>').join(''); }
+
+// Partner destination options (local + travel), grouped, from the partner's own tables.
+function partnerDestOpts(partnerKey, sel){
+  const P=PARTNERS[partnerKey]; if(!P) return '';
+  let o='<option value="">— choose destination —</option>';
+  o+='<optgroup label="Local">';
+  for(const k in P.local) o+='<option value="'+k+'"'+(k===sel?' selected':'')+'>'+P.local[k].name+'</option>';
+  o+='</optgroup><optgroup label="Travel">';
+  for(const k in P.travel) o+='<option value="'+k+'"'+(k===sel?' selected':'')+'>'+P.travel[k].name+'</option>';
+  o+='</optgroup>';
+  return o;
+}
+function partnerBodyHTML(trip, k, partnerKey){
+  const P=PARTNERS[partnerKey];
+  const airport=isAirportKind(k);
+  const isHourly=(k==='hourly');
+
+  // ---- GCT body: zone selector for airport; hours for P2P/hourly ----
+  if(P.zoneModel){
+    let g='';
+    const feeNote='+20% gratuity / −20% discount (cancel to net), then 4% card fee (GCT pays by card).';
+    g+='<div class="dew-banner">GCT affiliate — '+(airport?'zone-based (airport)':'hourly (P2P collapses to hourly, 2hr min)')+'. '+feeNote+'</div>';
+    g+='<div class="row2">'
+      + '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOptsGCT(trip.vehicle)+'</select></div>'
+      + '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+      + '</div>';
+    if(airport){
+      g+='<div class="row2" style="margin-top:10px;">'
+        + '<div><label style="margin-top:0;">GCT zone (non-airport end)</label><select data-f="gctZone">'+gctZoneOpts(trip.gctZone)+'</select></div>'
+        + '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+        + '</div>';
+      const v=trip.vehicle, eligible=(v==='sedan'||v==='fsuv'||v==='vsuv');
+      g+='<div class="check" style="margin-top:12px;"><input type="checkbox" data-f="meetGreet"'+(trip.meetGreet?' checked':'')+(eligible?'':' disabled')+'><label>Inside-airport greet (+$'+DEW_MEET_GREET+' to base, sedans/SUVs)</label></div>';
+    } else {
+      g+='<div class="row2" style="margin-top:10px;">'
+        + '<div><label style="margin-top:0;">Booked hours (2hr min)</label><input type="number" data-f="hours" value="'+(trip.hours||2)+'" min="2" step="0.5"></div>'
+        + '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+        + '</div>';
+      if(k==='p2p') g+='<div class="hint">GCT prices point-to-point as hourly at a 2-hour minimum.</div>';
+    }
+    return g;
+  }
+
+  const wrapNote = (P.gratPct>0)
+    ? P.name+' partner rate — flat, entered in LA with +'+P.gratPct+'% gratuity / −'+P.discPct+'% discount (shown below, cancel to net zero). Holiday + pass-throughs still apply.'
+    : P.name+' partner rate — flat, final to client (no gratuity/discount). Holiday + pass-throughs still apply.';
+  let html='';
+  html+='<div class="dew-banner">'+wrapNote+'</div>';
+  html+='<div class="row2">'
+    +   '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOpts(trip.vehicle)+'</select></div>'
+    +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+    + '</div>';
+  if(isHourly){
+    html+='<div class="row2" style="margin-top:10px;">'
+      +   '<div><label style="margin-top:0;">Booked hours (2–10)</label><input type="number" data-f="hours" value="'+(trip.hours||2)+'" min="2" max="10" step="1"></div>'
+      +   '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+      + '</div>';
+  } else {
+    html+='<div class="row2" style="margin-top:10px;">'
+      +   '<div><label style="margin-top:0;">'+P.name+' destination</label><select data-f="dewDest">'+partnerDestOpts(partnerKey, trip.dewDest)+'</select></div>'
+      +   '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+      + '</div>';
+    const look=trip.dewDest?partnerLookup(partnerKey, trip.dewDest, trip.vehicle):null;
+    if(look && look.hourly){
+      html+='<div class="row2" style="margin-top:10px;"><div><label style="margin-top:0;">Hours (2hr min destination)</label><input type="number" data-f="hours" value="'+(trip.hours||2)+'" min="2" max="10" step="1"></div><div></div></div>';
+    }
+  }
+  // inside-airport greet (service add-on) for airport trips (sedans/SUVs)
+  if(airport){
+    const v=trip.vehicle;
+    const eligible=(v==='sedan'||v==='fsuv'||v==='vsuv');
+    html+='<div class="check" style="margin-top:12px;"><input type="checkbox" data-f="meetGreet"'+(trip.meetGreet?' checked':'')+(eligible?'':' disabled')+'><label>Inside-airport greet (+$'+DEW_MEET_GREET+' to base, sedans/SUVs)</label></div>';
+    if(!eligible) html+='<div class="hint">Inside greet is sedans/SUVs only; curbside is standard (no charge).</div>';
+  }
+  return html;
+}
+
+function vintageTypeOpts(sel){ return Object.keys(VINTAGE).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+VINTAGE[k].name+'</option>').join(''); }
+function otrBodyHTML(trip){
+  const days=Math.max(1,+trip.otrDays||1), overnights=Math.max(0,+trip.otrOvernights||0), miles=Math.max(0,+trip.otrMiles||0);
+  const drivers=Math.max(1,+trip.otrDrivers||1), season=trip.otrSeason||'standard';
+  const fuel=(miles/OTR_MPG)*OTR_DIESEL;
+  const est=OTR_DRIVER_DAY*days*drivers + fuel + OTR_LODGING_NIGHT*overnights*drivers + OTR_PERDIEM_DAY*days*drivers + (OTR_VEHICLE_DAY[season]||900)*days;
+  const busOpts=Object.keys(BUSES).map(k=>'<option value="'+k+'"'+(k===trip.otrBus?' selected':'')+'>'+BUSES[k].name+'</option>').join('');
+  const seasonOpt=(v,l)=>'<option value="'+v+'"'+(trip.otrSeason===v?' selected':'')+'>'+l+'</option>';
+  return ''
+    + '<div class="dew-banner">Over-the-road / multiday — cost-up pricing. Duty-day &amp; relief-driver determination (FMCSA) comes with the planner; here you enter the trip parameters. Mileage measured round-trip from the Hollywood yard.</div>'
+    + '<div class="row2">'
+    +   '<div><label style="margin-top:0;">Bus</label><select data-f="otrBus">'+busOpts+'</select></div>'
+    +   '<div><label style="margin-top:0;">Season (vehicle day rate)</label><select data-f="otrSeason">'+seasonOpt('peak','Peak $1000')+seasonOpt('standard','Standard $900')+seasonOpt('slow','Slow $800')+seasonOpt('dead','Dead $700')+'</select></div>'
+    + '</div>'
+    + '<div class="row3" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Committed days</label><input type="number" data-f="otrDays" value="'+trip.otrDays+'" min="1" step="1"></div>'
+    +   '<div><label style="margin-top:0;">Overnights</label><input type="number" data-f="otrOvernights" value="'+trip.otrOvernights+'" min="0" step="1"></div>'
+    +   '<div><label style="margin-top:0;">Drivers</label><input type="number" data-f="otrDrivers" value="'+trip.otrDrivers+'" min="1" max="2" step="1"></div>'
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Round-trip miles (from Hollywood)</label><input type="number" data-f="otrMiles" value="'+trip.otrMiles+'" min="0"></div>'
+    +   '<div><label style="margin-top:0;">Tolls / permits (pass-through)</label><input type="number" data-f="otrTolls" value="'+trip.otrTolls+'" min="0"></div>'
+    + '</div>'
+    + (drivers>1 ? '<div class="row2" style="margin-top:10px;"><div><label style="margin-top:0;">Relief-driver positioning shuttle $</label><input type="number" data-f="otrReliefShuttle" value="'+trip.otrReliefShuttle+'" min="0"></div><div></div></div>' : '')
+    + '<div class="bus-rate">Est. cost-up base: <strong>$'+est.toFixed(2)+'</strong> <span class="bus-factors">(driver + fuel $'+fuel.toFixed(0)+' + lodging + per diem + vehicle day rate'+(drivers>1?' × '+drivers+' drivers':'')+')</span> — before 20% gratuity + 4% card</div>'
+    + '<div class="hint">Second driver (relief) doubles driver/per-diem/lodging and adds a positioning shuttle. Used only when one-way driving exceeds a single FMCSA duty day and same-day arrival is required. Tolls/permits are pass-through (no markup).</div>'
+    + otrPlannerHTML(trip);
+}
+
+// ---- OTR advisory planner panel: timeline → feasibility → ranked legal options ----
+function otrPlannerHTML(trip){
+  const on=trip.otrPlannerOn;
+  let h='<details class="drive-override"'+(on?' open':'')+' data-otrplanner="1"><summary>◎ Feasibility planner (advisory · FMCSA duty-day check)</summary>';
+  h+='<div style="margin-top:10px;">';
+  h+='<div class="hint" style="margin-top:0;">Enter each day\'s estimated <strong>driving hours</strong> and total <strong>on-duty hours</strong> (driving + loading + service). The planner checks each day against the FMCSA limits (≤10h driving, ≤15h on-duty, 8h rest) and shows the legal options ranked by cost. Reasoning-focused — live drive times wire in later.</div>';
+  // per-day rows
+  (trip.otrTimeline||[]).forEach((d,i)=>{
+    h+='<div class="row3" style="margin-top:8px;align-items:end;">'
+      + '<div><label style="margin-top:0;">'+(d.label||'Day '+(i+1))+' — drive h</label><input type="number" data-otrday="'+i+'" data-otrfield="driveHrs" value="'+d.driveHrs+'" min="0" step="0.5"></div>'
+      + '<div><label style="margin-top:0;">on-duty h</label><input type="number" data-otrday="'+i+'" data-otrfield="onDutyHrs" value="'+d.onDutyHrs+'" min="0" step="0.5"></div>'
+      + '<div><button class="addbtn ghost" type="button" data-otrdelday="'+i+'" style="width:100%">Remove</button></div>'
+      + '</div>';
+  });
+  h+='<button class="addbtn" type="button" data-otraddday="1" style="margin-top:8px;">+ Add day</button>';
+  // run the analysis
+  const feas=otrFeasibility(trip.otrTimeline||[]);
+  const base={days:+trip.otrDays||(trip.otrTimeline||[]).length, overnights:+trip.otrOvernights||0, miles:+trip.otrMiles||0, season:trip.otrSeason||'standard', feasibility:feas, reliefShuttle:+trip.otrReliefShuttle||175};
+  const opts=otrOptions(base).map(o=>({o, p:otrPriceOption(o, base.miles, base.season, +trip.otrTolls||0)}));
+  opts.sort((a,b)=>(b.o.legal-a.o.legal)||(a.p.cardTotal-b.p.cardTotal));
+  // feasibility summary
+  h+='<div class="otr-analysis">';
+  if(feas.feasible){
+    h+='<div class="otr-verdict ok">✓ Feasible with a single driver — every day fits one FMCSA duty day.</div>';
+  } else {
+    h+='<div class="otr-verdict warn">⚠ Not legal as a single-driver trip:</div>';
+    feas.infeasibleDays.forEach(d=>{ h+='<div class="otr-viol">• '+(d.label)+' — '+d.violation+'</div>'; });
+  }
+  // ranked options
+  h+='<div class="otr-opts">';
+  opts.forEach(({o,p},idx)=>{
+    const rec = o.legal && idx===0;
+    h+='<div class="otr-opt'+(o.legal?'':' illegal')+(rec?' rec':'')+'">'
+      + '<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(rec?' <span class="rec-badge">recommended</span>':'')+'</div>'
+      + '<div class="otr-opt-meta">'+o.days+' days · '+o.overnights+' nights · '+o.drivers+' driver'+(o.drivers>1?'s':'')+(o.shuttle?' · +'+M(o.shuttle)+' shuttle':'')+'</div>'
+      + '<div class="otr-opt-price">'+M(p.cardTotal)+' <span class="otr-ach">card · '+M(p.achTotal)+' ACH</span></div>'
+      + '<div class="otr-opt-note">'+o.note+'</div>'
+      + '</div>';
+  });
+  h+='</div></div>';
+  h+='</div></details>';
+  return h;
+}
+function vintageBodyHTML(trip){
+  const v=VINTAGE[trip.vintageType]||VINTAGE.convertible;
+  return ''
+    + '<div class="row2">'
+    +   '<div><label style="margin-top:0;">Vintage vehicle</label><select data-f="vintageType">'+vintageTypeOpts(trip.vintageType)+'</select></div>'
+    +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Service hours (1h min)</label><input type="number" data-f="vintageServiceHrs" value="'+trip.vintageServiceHrs+'" min="1" step="0.5"></div>'
+    +   '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Dead-head each way (min)</label><input type="number" data-f="vintageDeadheadMin" value="'+trip.vintageDeadheadMin+'" min="0"></div>'
+    +   '<div><label style="margin-top:0;">Non-consecutive hrs</label><input type="number" data-f="vintageNonconsecHrs" value="'+trip.vintageNonconsecHrs+'" min="0" step="0.5"></div>'
+    + '</div>'
+    + '<div class="bus-rate">'+v.name+': <strong>$'+v.first+'</strong> first hour · $'+VINTAGE_CONSEC_RATE+'/hr consecutive · $'+VINTAGE_NONCONSEC_RATE+'/hr non-consecutive · dead-head @ $'+VINTAGE_CONSEC_RATE+'/hr</div>'
+    + '<div class="hint">First service hour bills at the vehicle rate; additional consecutive hours at $'+VINTAGE_CONSEC_RATE+'; separate blocks (with a gap) at $'+VINTAGE_NONCONSEC_RATE+'. Dead-head is round-trip CHS with a 15-min-per-leg waiver, billed at the consecutive rate. Standard 20% gratuity + 4% card. Non-consecutive splitting will be auto-derived by the planner later.</div>';
+}
+
+function busTypeOpts(sel){ return Object.keys(BUSES).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+BUSES[k].name+'</option>').join(''); }
+function busBodyHTML(trip){
+  const d=trip.date?new Date(trip.date+'T00:00:00'):null;
+  const season = trip.busSeasonOv || (d?busSeasonOf(d.getMonth()):'peak');
+  const day    = trip.busDayOv    || (d?busDayOf(d.getDay()):'sat');
+  const time   = trip.busTimeOv   || busTimeOf(trip.time);
+  const b=BUSES[trip.busType]||BUSES.mc4957;
+  let factor=Math.max(BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time], BUS_FLOOR);
+  const rate=b.base*factor;
+  const minH=busMinHours(season,day,time);
+  const seasonSel=(v)=>trip.busSeasonOv===v?' selected':'';
+  const daySel=(v)=>trip.busDayOv===v?' selected':'';
+  const timeSel=(v)=>trip.busTimeOv===v?' selected':'';
+  return ''
+    + '<div class="row2">'
+    +   '<div><label style="margin-top:0;">Bus</label><select data-f="busType">'+busTypeOpts(trip.busType)+'</select></div>'
+    +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Committed hours (min '+minH+'h)</label><input type="number" data-f="busHours" value="'+trip.busHours+'" min="0" step="0.5"></div>'
+    +   '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+    + '</div>'
+    + '<div class="bus-rate">Effective rate: <strong>$'+rate.toFixed(2)+'/hr</strong> = $'+b.base+' base × '+factor.toFixed(3)+' <span class="bus-factors">('+season+' · '+day+' · '+time+')</span></div>'
+    + '<details class="drive-override"><summary>Demand factors (override auto)</summary>'
+    +   '<div class="row3" style="margin-top:8px;">'
+    +     '<div><label style="margin-top:0;">Season</label><select data-f="busSeasonOv"><option value="">auto ('+season+')</option><option value="peak"'+seasonSel('peak')+'>Peak 1.00</option><option value="standard"'+seasonSel('standard')+'>Standard 0.90</option><option value="slow"'+seasonSel('slow')+'>Slow 0.80</option><option value="dead"'+seasonSel('dead')+'>Dead 0.70</option></select></div>'
+    +     '<div><label style="margin-top:0;">Day</label><select data-f="busDayOv"><option value="">auto ('+day+')</option><option value="sat"'+daySel('sat')+'>Sat 1.00</option><option value="fri"'+daySel('fri')+'>Fri 0.90</option><option value="sun"'+daySel('sun')+'>Sun 0.85</option><option value="weekday"'+daySel('weekday')+'>Mon–Thu 0.80</option></select></div>'
+    +     '<div><label style="margin-top:0;">Time</label><select data-f="busTimeOv"><option value="">auto ('+time+')</option><option value="prime"'+timeSel('prime')+'>Prime 1.00</option><option value="offprime"'+timeSel('offprime')+'>Off-prime 0.85</option></select></div>'
+    +   '</div>'
+    + '</details>'
+    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>';
+}
 
 function tripBodyHTML(trip){
   const k=trip.kind;
@@ -496,6 +1197,15 @@ function tripBodyHTML(trip){
       ? 'Auto-generated by Over-the-Road relief logic in the full build. Manual add is for exceptions. Becomes its own LA reservation (Secondary Driver).'
       : 'Operations adds this as an emergency-backup chauffeur. Becomes its own LA reservation (Standby). Not a client line item.';
     return '<div class="hint" style="margin-top:0;">'+why+'</div>';
+  }
+  if(k==='otr'){
+    return otrBodyHTML(trip);
+  }
+  if(k==='vintage'){
+    return vintageBodyHTML(trip);
+  }
+  if(k==='bus'){
+    return busBodyHTML(trip);
   }
   if(k==='greeter'){
     return ''
@@ -506,9 +1216,12 @@ function tripBodyHTML(trip){
       + '<div class="hint">$50/hr, 3-hour minimum, +20% gratuity (per SOP). Offered when a client has several airport arrivals, or auto-added for meet-and-greets on larger-than-SUV vehicles.</div>';
   }
   // standard fleet: airport / p2p / hourly — directional location pickers + live times
+  // ---- PARTNER routing body (Dewberry/Dunlin): destination lookup + greet, no drive-time machinery ----
+  if(isPartnerRouting(currentRouting()) && (isAirportKind(k)||k==='p2p'||k==='hourly')){
+    return partnerBodyHTML(trip, k, currentRouting());
+  }
+
   const airport=isAirportKind(k);
-  // build the two location selects per direction
-  let fromPicker, toPicker, fromLbl, toLbl;
   if(k==='fromairport'){
     fromLbl='Pickup (airport)'; toLbl='Dropoff (area)';
     fromPicker='<select data-f="fromKey">'+airportOpts(trip.fromKey!=='none'?trip.fromKey:'chs_main')+'</select>';
@@ -562,9 +1275,21 @@ function tripBreakdownHTML(trip){
     const val = (l.txt!=null) ? l.txt : (l.val!=null ? M(l.val) : '');
     rows+=`<div class="bd-line${l.sub?' sub':''}"><span>${l.lbl}</span><span>${val}</span></div>`;
   });
-  // gratuity & discount — on base (time-rate + late-night) ONLY
-  if(trip._grat>0) rows+=`<div class="bd-line"><span>Gratuity (+${trip.gratuityPct}% of base)</span><span>${M(trip._grat)}</span></div>`;
-  if(trip._disc>0) rows+=`<div class="bd-line discount"><span>Trip discount (−${trip.discountPct}% of base)</span><span>−${M(trip._disc)}</span></div>`;
+  // gratuity & discount. RETAIL: trip's %. PARTNER: partner's % (Dewberry 0 → note; Dunlin 7.5 → visible canceling lines).
+  if(trip._partnerFlat){
+    if((trip._gratPct||0)>0 || (trip._discPct||0)>0){
+      // visible canceling lines that mirror LA entry (e.g. Dunlin +7.5% / −7.5%)
+      rows+=`<div class="bd-line"><span>Gratuity (+${trip._gratPct}% of base · LA entry)</span><span>${M(trip._grat)}</span></div>`;
+      rows+=`<div class="bd-line discount"><span>Discount (−${trip._discPct}% of base · LA entry)</span><span>−${M(trip._disc)}</span></div>`;
+      const net=trip._grat-trip._disc;
+      if(Math.abs(net)<0.005) rows+=`<div class="bd-line sub"><span style="font-style:italic;">↳ gratuity &amp; discount net to $0 — total is the flat rate</span><span></span></div>`;
+    } else {
+      rows+=`<div class="bd-line sub"><span style="font-style:italic;">Flat partner rate — no gratuity or discount</span><span></span></div>`;
+    }
+  } else {
+    if(trip._grat>0) rows+=`<div class="bd-line"><span>Gratuity (+${trip._gratPct}% of base)</span><span>${M(trip._grat)}</span></div>`;
+    if(trip._disc>0) rows+=`<div class="bd-line discount"><span>Trip discount (−${trip._discPct}% of base)</span><span>−${M(trip._disc)}</span></div>`;
+  }
   // holiday — % of base, but OUTSIDE the gratuity basis (no gratuity on it)
   if(trip._holidayAmt>0){
     rows+=`<div class="bd-line"><span>Holiday surcharge (+30% of base${trip._holidayName?' · '+trip._holidayName:''})</span><span>${M(trip._holidayAmt)}</span></div>`;
@@ -573,7 +1298,8 @@ function tripBreakdownHTML(trip){
   if(trip._passthroughs&&trip._passthroughs.length){
     rows+=`<div class="bd-line sub" style="padding-top:6px;border-top:1px dotted var(--line);"><span style="font-style:italic;">Pass-throughs (no gratuity)</span><span></span></div>`;
     trip._passthroughs.forEach(a=>{
-      rows+=`<div class="bd-line"><span>${a.label||'item'}${a.auto?' (auto)':''}</span><span>${M(+a.amount||0)}</span></div>`;
+      const amt = a.included ? 'included' : M(+a.amount||0);
+      rows+=`<div class="bd-line"><span>${a.label||'item'}${a.auto&&!a.included?' (auto)':''}</span><span>${amt}</span></div>`;
     });
   }
   rows+=`<div class="bd-line total"><span>Trip subtotal</span><span>${M(trip.subtotal)}</span></div>`;
@@ -689,16 +1415,63 @@ $('tripList').addEventListener('click',e=>{
     live.disabled=true;
     refreshTripTimes(trip,statusEl).finally(()=>{ live.disabled=false; });
   }
+  // OTR planner: add / remove a timeline day
+  const addDay=e.target.closest('[data-otraddday]');
+  const delDay=e.target.closest('[data-otrdelday]');
+  if(addDay||delDay){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    trip.otrPlannerOn=true;
+    if(!trip.otrTimeline) trip.otrTimeline=[];
+    if(addDay){ trip.otrTimeline.push({label:'Day '+(trip.otrTimeline.length+1), driveHrs:6, onDutyHrs:9}); }
+    if(delDay){ trip.otrTimeline.splice(+delDay.dataset.otrdelday,1); trip.otrTimeline.forEach((d,i)=>d.label='Day '+(i+1)); }
+    computeTrip(trip);
+    const body=card.querySelector('.trip-body');
+    if(body) body.innerHTML=tripBodyHTML(trip)+tripBreakdownHTML(trip);
+    refreshSubtotalUI(trip); renderSummary();
+    return;
+  }
 });
 $('tripList').addEventListener('input',e=>{
+  // OTR planner per-day timeline inputs
+  const otrDay=e.target.dataset.otrday;
+  if(otrDay!==undefined){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const idx=+otrDay, field=e.target.dataset.otrfield;
+    if(trip.otrTimeline&&trip.otrTimeline[idx]){ trip.otrTimeline[idx][field]=+e.target.value||0; }
+    trip.otrPlannerOn=true;
+    // refresh only the analysis portion (re-render body, keep planner open)
+    computeTrip(trip);
+    const body=card.querySelector('.trip-body');
+    if(body) body.innerHTML=tripBodyHTML(trip)+tripBreakdownHTML(trip);
+    renderSummary();
+    return;
+  }
   const f=e.target.dataset.f; if(!f) return;
   const card=e.target.closest('[data-tid]'); if(!card) return;
   const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
-  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct'];
-  trip[f]= numeric.includes(f) ? (+e.target.value||0) : e.target.value;
+  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle'];
+  if(e.target.type==='checkbox'){
+    trip[f]=e.target.checked;
+  } else {
+    trip[f]= numeric.includes(f) ? (+e.target.value||0) : e.target.value;
+  }
+  // Structural changes that alter which inputs/rate display show → rebuild this card's body.
+  const dewStructural = isPartnerRouting(currentRouting()) && (f==='dewDest'||f==='vehicle');
+  const busStructural = trip.kind==='bus' && (f==='busType'||f==='date'||f==='time'||f==='busSeasonOv'||f==='busDayOv'||f==='busTimeOv');
+  const vintageStructural = trip.kind==='vintage' && f==='vintageType';
+  const otrStructural = trip.kind==='otr' && (f==='otrDrivers'||f==='otrBus'||f==='otrSeason');
+  if(dewStructural || busStructural || vintageStructural || otrStructural){
+    computeTrip(trip);
+    const body=card.querySelector('.trip-body');
+    if(body) body.innerHTML = tripBodyHTML(trip) + tripBreakdownHTML(trip);
+    refreshSubtotalUI(trip);
+    renderSummary();
+    return;
+  }
   computeTrip(trip);
   refreshSubtotalUI(trip);
-  // refresh the breakdown body in place if it's expanded (preserves focus on the input)
   const bd=card.querySelector('.breakdown');
   if(bd && bd.open){
     const fresh=document.createElement('div');
@@ -751,6 +1524,14 @@ function onSourceChange(){
 $('source').addEventListener('change',onSourceChange);
 // quote-wide wrapper inputs re-run the summary
 ['groupDisc','payment'].forEach(id=>{ if($(id)) $(id).addEventListener('input',renderSummary); });
+// routing change: re-render all trips (Dewberry swaps the trip body) + set ACH for Dewberry
+if($('routing')) $('routing').addEventListener('change',()=>{
+  if(isPartnerRouting($('routing').value) && $('payment')){
+    // GCT pays by card (4% fee); other partners are ACH (no fee)
+    $('payment').value = (PARTNERS[$('routing').value] && PARTNERS[$('routing').value].cardFee) ? 'card' : 'ach';
+  }
+  renderTrips();
+});
 $('refNum').addEventListener('input',()=>{
   refUserEdited=true;
   const prefix=$('source').value;
