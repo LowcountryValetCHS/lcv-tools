@@ -878,6 +878,21 @@ async function refreshTripTimes(trip, statusEl){
     if(statusEl) statusEl.innerHTML=msg;
     computeTrip(trip);
     refreshSubtotalUI(trip);
+    // refresh the breakdown in place so it matches the updated drive times (was showing stale base)
+    const card=document.querySelector('[data-tid="'+trip.id+'"]');
+    if(card){
+      const bd=card.querySelector('.breakdown');
+      if(bd){
+        const wasOpen=bd.open;
+        const fresh=document.createElement('div');
+        fresh.innerHTML=tripBreakdownHTML(trip);
+        const newBd=fresh.querySelector('.breakdown');
+        if(newBd){ newBd.open=wasOpen; bd.replaceWith(newBd); }
+      }
+      // also refresh the collapsed override drive-time inputs to show the fetched values
+      const stdIn=card.querySelector('[data-f="driveStd"]'); if(stdIn) stdIn.value=trip.driveStd;
+      const busyIn=card.querySelector('[data-f="driveBusy"]'); if(busyIn) busyIn.value=trip.driveBusy;
+    }
     renderSummary();
   }catch(err){
     if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Lookup failed ('+err.message+'). Enter times manually below.</span>';
