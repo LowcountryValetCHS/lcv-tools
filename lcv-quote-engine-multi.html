@@ -864,6 +864,37 @@ async function fetchLegPair(from,to,departISO){
   return out;
 }
 // Per-trip live lookup: resolves the trip's from/to (geocoded), fetches std/busy, writes to the trip.
+// ---- AUTO-FETCH live drive times: debounced + de-duplicated ----
+// Fires automatically when a retail airport/P2P trip has date + both locations set,
+// re-firing when any drive-time-affecting input (locations, date, time) changes,
+// but waiting for a pause and skipping if the inputs haven't actually changed.
+const _autoFetchTimers = {};
+function driveInputKey(trip){ return [trip.fromKey, trip.toKey, trip.date, trip.time].join('|'); }
+function autoFetchEligible(trip){
+  // retail only (partners use flat tables), standard-fleet airport/P2P/hourly, all inputs present
+  if(isPartnerRouting(currentRouting())) return false;
+  const k=trip.kind;
+  const usesLocations = (k==='fromairport'||k==='toairport'||k==='p2p'||k==='hourly');
+  if(!usesLocations) return false;
+  if(!mapsReady() || !trip.date) return false;
+  if(!resolveLoc(trip.fromKey) || !resolveLoc(trip.toKey)) return false;
+  return true;
+}
+function scheduleAutoFetch(trip){
+  if(!autoFetchEligible(trip)) return;
+  const key=driveInputKey(trip);
+  if(trip._lastFetchKey===key) return; // inputs unchanged since last successful fetch → skip
+  clearTimeout(_autoFetchTimers[trip.id]);
+  _autoFetchTimers[trip.id]=setTimeout(()=>{
+    // re-check eligibility + key at fire time (inputs may have changed again)
+    if(!autoFetchEligible(trip)) return;
+    if(trip._lastFetchKey===driveInputKey(trip)) return;
+    const card=document.querySelector('[data-tid="'+trip.id+'"]');
+    const statusEl=card?card.querySelector('[data-livestatus]'):null;
+    refreshTripTimes(trip,statusEl);
+  }, 800); // debounce: wait for the agent to pause
+}
+
 async function refreshTripTimes(trip, statusEl){
   if(!mapsReady()){ if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Add your Maps API key to the file to enable live times.</span>'; return; }
   if(!trip.date){ if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Set a service date on this trip first.</span>'; return; }
@@ -878,6 +909,7 @@ async function refreshTripTimes(trip, statusEl){
     const dep=deptISOfor(trip);
     const pair=await fetchLegPair(from,to,dep.iso);
     trip.driveStd=pair.std; trip.driveBusy=pair.busy;
+    trip._lastFetchKey=driveInputKey(trip); // mark these inputs as fetched (de-dup)
     const spread=pair.busy-pair.std;
     const exactNote=(from.exact||to.exact)?'':' (approx)';
     let msg='<span style="color:#2f7d50">✓ std '+pair.std+' / busy '+pair.busy+' min'+(spread<=1?'':' (±'+spread+')')+exactNote+'</span>';
@@ -1439,7 +1471,7 @@ function renderSummary(){
 }
 
 // ---- Add / remove trips ----
-function addTrip(kind){ TRIPS.push(makeTrip(kind)); renderTrips(); }
+function addTrip(kind){ const t=makeTrip(kind); TRIPS.push(t); renderTrips(); scheduleAutoFetch(t); }
 function delTrip(id){ TRIPS=TRIPS.filter(t=>t.id!==id); renderTrips(); }
 
 document.querySelectorAll('[data-add]').forEach(b=>{
@@ -1526,6 +1558,14 @@ $('tripList').addEventListener('input',e=>{
     trip[f]=e.target.checked;
   } else {
     trip[f]= numeric.includes(f) ? (+e.target.value||0) : e.target.value;
+  }
+  // Auto-fetch live drive times when a drive-time-affecting input changes (debounced + de-duped).
+  // Manual override of driveStd/driveBusy should NOT trigger a re-fetch (agent is setting them by hand).
+  if(f==='fromKey'||f==='toKey'||f==='date'||f==='time'){
+    scheduleAutoFetch(trip);
+  }
+  if(f==='driveStd'||f==='driveBusy'){
+    trip._lastFetchKey=driveInputKey(trip); // manual edit — treat current inputs as "settled", suppress auto-refetch
   }
   // Structural changes that alter which inputs/rate display show → rebuild this card's body.
   const dewStructural = isPartnerRouting(currentRouting()) && (f==='dewDest'||f==='vehicle');
