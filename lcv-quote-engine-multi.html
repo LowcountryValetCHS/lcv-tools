@@ -862,7 +862,9 @@ async function refreshTripTimes(trip, statusEl){
   if(!trip.date){ if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Set a service date on this trip first.</span>'; return; }
   try{
     const fromLoc=resolveLoc(trip.fromKey), toLoc=resolveLoc(trip.toKey);
-    if(!fromLoc||!toLoc) throw new Error("pick both locations");
+    if(!fromLoc && !toLoc) throw new Error("select both a pickup and dropoff");
+    if(!fromLoc) throw new Error("select a pickup location");
+    if(!toLoc) throw new Error("select a dropoff location");
     if(statusEl) statusEl.textContent='Resolving locations…';
     const [from,to]=await Promise.all([geocodeLoc(fromLoc),geocodeLoc(toLoc)]);
     if(statusEl) statusEl.textContent='Fetching live drive times…';
@@ -1222,14 +1224,24 @@ function tripBodyHTML(trip){
   }
 
   const airport=isAirportKind(k);
+  // Normalize location keys so the STORED value matches the displayed default
+  // (fixes "pick both locations" when the dropdown shows a value the trip didn't hold).
+  if(k==='fromairport' && (!trip.fromKey || trip.fromKey==='none')) trip.fromKey='chs_main';
+  if(k==='toairport' && (!trip.toKey || trip.toKey==='none')) trip.toKey='chs_main';
+  if(k==='fromairport' && (!trip.toKey || trip.toKey==='none')) trip.toKey='downtown';
+  if(k==='toairport' && (!trip.fromKey || trip.fromKey==='none')) trip.fromKey='downtown';
+  if((k==='p2p'||k==='hourly')){
+    if(!trip.fromKey || trip.fromKey==='none') trip.fromKey='downtown';
+    if(!trip.toKey || trip.toKey==='none') trip.toKey='mtp';
+  }
   if(k==='fromairport'){
     fromLbl='Pickup (airport)'; toLbl='Dropoff (area)';
-    fromPicker='<select data-f="fromKey">'+airportOpts(trip.fromKey!=='none'?trip.fromKey:'chs_main')+'</select>';
+    fromPicker='<select data-f="fromKey">'+airportOpts(trip.fromKey)+'</select>';
     toPicker='<select data-f="toKey">'+locOpts(trip.toKey)+'</select>';
   } else if(k==='toairport'){
     fromLbl='Pickup (area)'; toLbl='Dropoff (airport)';
     fromPicker='<select data-f="fromKey">'+locOpts(trip.fromKey)+'</select>';
-    toPicker='<select data-f="toKey">'+airportOpts(trip.toKey!=='none'?trip.toKey:'chs_main')+'</select>';
+    toPicker='<select data-f="toKey">'+airportOpts(trip.toKey)+'</select>';
   } else { // p2p / hourly
     fromLbl='Pickup / from (area)'; toLbl=(k==='hourly'?'Primary area':'Dropoff / to (area)');
     fromPicker='<select data-f="fromKey">'+locOpts(trip.fromKey)+'</select>';
