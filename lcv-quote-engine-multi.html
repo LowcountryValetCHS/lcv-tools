@@ -594,6 +594,22 @@ function isAirportKind(kind){ return kind==='fromairport'||kind==='toairport'; }
 //   passthroughs = auto-detected reimbursements (e.g. Kiawah gate) — added AFTER gratuity, no markup
 // No DOM. This is the per-trip spine; the wrapper sums these.
 // ----------------------------------------------------------------------------
+// Kiawah gate detection by COORDINATES (for exact addresses, where the city may read
+// "Johns Island" or "Kiawah Island"). Kiawah Island requires the gate pass; neighboring
+// Seabrook Island does NOT, and mainland Johns Island does not. Bounding box covers Kiawah only.
+function isKiawahCoord(lat,lng){
+  if(lat==null||lng==null) return false;
+  // Kiawah Island bounds (Seabrook, west of ~-80.155, is intentionally excluded).
+  return lat>=32.575 && lat<=32.625 && lng>=-80.115 && lng<=-80.025;
+}
+function tripTouchesKiawah(trip){
+  const KIAWAH_KEYS=['kiawah','sanctuary','oceancourse'];
+  if(KIAWAH_KEYS.includes(trip.fromKey)||KIAWAH_KEYS.includes(trip.toKey)) return true;
+  if(trip._fromGeo && isKiawahCoord(trip._fromGeo.lat,trip._fromGeo.lng)) return true;
+  if(trip._toGeo && isKiawahCoord(trip._toGeo.lat,trip._toGeo.lng)) return true;
+  return false;
+}
+
 function priceTrip(trip){
   const lines=[];
   const k=trip.kind;
@@ -677,8 +693,7 @@ function priceTrip(trip){
     const holidayName=holidayOf(trip.date);
     const holidayPct = holidayName ? 0.30 : 0;
     const passthroughs=[];
-    const KIAWAH=['kiawah','sanctuary','oceancourse'];
-    if(KIAWAH.includes(trip.fromKey)||KIAWAH.includes(trip.toKey)){
+    if(tripTouchesKiawah(trip)){
       passthroughs.push({label:'Kiawah gate pass (bus)', amount:43, auto:true});
     }
     return {base, lines, note:b.name+' · '+hrs.toFixed(1)+'h', holidayPct, holidayName, passthroughs, busFactor:{season,day,time,rate,factor}};
@@ -749,10 +764,9 @@ function priceTrip(trip){
 
   // ---- PASS-THROUGHS (auto-detected): reimbursements added AFTER gratuity, NO markup. ----
   const passthroughs=[];
-  // Kiawah gate pass — auto when a location is gate-controlled. $24 cars/vans, $43 buses.
-  const KIAWAH=['kiawah','sanctuary','oceancourse'];
-  if(KIAWAH.includes(trip.fromKey)||KIAWAH.includes(trip.toKey)){
-    passthroughs.push({label:'Kiawah gate pass', amount:24, auto:true}); // bus rate handled when bus type lands
+  // Kiawah gate pass — auto when a location is gate-controlled (known venue OR exact coords on Kiawah).
+  if(tripTouchesKiawah(trip)){
+    passthroughs.push({label:'Kiawah gate pass', amount:24, auto:true});
   }
 
   return {base, lines, note:(STD[veh]?STD[veh].name:veh)+' '+(airport?'airport':(k==='hourly'?'hourly':'P2P')), holidayPct, holidayName, passthroughs};
@@ -864,7 +878,7 @@ function locNotes(key){ return (AREAS[key]&&AREAS[key].notes)||(AIRPORTS[key]&&A
 function locFieldHTML(keyField, addrField, keyVal, addrVal, optsFn){
   let h='<select data-f="'+keyField+'">'+optsFn(keyVal)+'</select>';
   if(keyVal===EXACT_KEY){
-    h+='<input type="text" data-f="'+addrField+'" value="'+(addrVal||'').replace(/"/g,'&quot;')+'" placeholder="Street, City, State (e.g. 102 Main St, Beaufort SC)" style="margin-top:6px;width:100%;">';
+    h+='<input type="text" data-f="'+addrField+'" value="'+(addrVal||'').replace(/"/g,'&quot;')+'" placeholder="Venue name or address (e.g. The Dewberry Charleston, or 102 Main St, Beaufort SC)" style="margin-top:6px;width:100%;">';
   } else {
     const note=locNotes(keyVal);
     if(note) h+='<div class="loc-note">📍 '+note+'</div>';
@@ -876,21 +890,51 @@ async function geocodeLoc(loc){
   if(!loc) return null;
   if(!loc.addr) return {lat:loc.lat,lng:loc.lng,exact:false};
   if(geoCache[loc.addr]) return geoCache[loc.addr];
-  try{
+
+  // 1) Places Text Search (New) — handles business/venue NAMES ("The Dewberry Charleston",
+  //    "Atlantic Aviation North Charleston") as well as partial addresses. Biased to the
+  //    Charleston region so ambiguous names resolve locally.
+  async function tryPlaces(){
+    const body={
+      textQuery: loc.addr,
+      locationBias:{ circle:{ center:{latitude:32.7833,longitude:-79.9333}, radius:80000.0 } },
+      maxResultCount:1
+    };
+    const res=await fetch("https://places.googleapis.com/v1/places:searchText",{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Goog-Api-Key":MAPS_KEY,
+        "X-Goog-FieldMask":"places.location,places.formattedAddress,places.displayName"
+      },
+      body:JSON.stringify(body)
+    });
+    if(!res.ok) throw new Error("places "+res.status);
+    const data=await res.json();
+    const pl=data.places&&data.places[0];
+    if(!pl||!pl.location) throw new Error("no place");
+    return {lat:pl.location.latitude,lng:pl.location.longitude,exact:true,
+            formatted:(pl.displayName&&pl.displayName.text?pl.displayName.text+' — ':'')+(pl.formattedAddress||'')};
+  }
+  // 2) Geocoding fallback — for clean street addresses Places might miss.
+  async function tryGeocode(){
     const url="https://maps.googleapis.com/maps/api/geocode/json?address="+encodeURIComponent(loc.addr)+"&key="+encodeURIComponent(MAPS_KEY);
     const res=await fetch(url);
     if(!res.ok) throw new Error("geocode "+res.status);
     const data=await res.json();
-    if(data.status!=='OK'||!data.results||!data.results[0]) throw new Error("address not found");
+    if(data.status!=='OK'||!data.results||!data.results[0]) throw new Error("no geocode");
     const p=data.results[0].geometry.location;
-    const out={lat:p.lat,lng:p.lng,exact:true,formatted:data.results[0].formatted_address};
-    geoCache[loc.addr]=out;
-    return out;
-  }catch(e){
-    // A free-text exact entry has no stored fallback coords — surface the failure so the agent fixes the address.
-    if(loc.exactEntry) throw new Error("couldn't find that address — check spelling / add city & state");
-    return {lat:loc.lat,lng:loc.lng,exact:false};
+    return {lat:p.lat,lng:p.lng,exact:true,formatted:data.results[0].formatted_address};
   }
+
+  let out=null;
+  try{ out=await tryPlaces(); }
+  catch(e1){ try{ out=await tryGeocode(); }catch(e2){ out=null; } }
+
+  if(out){ geoCache[loc.addr]=out; return out; }
+  // A free-text exact entry has no stored fallback coords — surface the failure.
+  if(loc.exactEntry) throw new Error("couldn't find that place — try adding city & state, or a street address");
+  return {lat:loc.lat,lng:loc.lng,exact:false};
 }
 function deptISOfor(trip){
   if(!trip.date) return {iso:null,past:false};
@@ -965,8 +1009,7 @@ async function refreshTripTimes(trip, statusEl){
     if(!fromLoc) throw new Error("select a pickup location");
     if(!toLoc) throw new Error("select a dropoff location");
     if(statusEl) statusEl.textContent='Resolving locations…';
-    const [from,to]=await Promise.all([geocodeLoc(fromLoc),geocodeLoc(toLoc)]);
-    if(statusEl) statusEl.textContent='Fetching live drive times…';
+
     const dep=deptISOfor(trip);
     const pair=await fetchLegPair(from,to,dep.iso);
     trip.driveStd=pair.std; trip.driveBusy=pair.busy;
@@ -1633,6 +1676,9 @@ $('tripList').addEventListener('input',e=>{
   // Auto-fetch live drive times when a drive-time-affecting input changes (debounced + de-duped).
   // Manual override of driveStd/driveBusy should NOT trigger a re-fetch (agent is setting them by hand).
   if(f==='fromKey'||f==='toKey'||f==='date'||f==='time'||f==='fromAddr'||f==='toAddr'){
+    // clear stored resolved coords for the changed endpoint (avoid stale Kiawah flag until re-fetch)
+    if(f==='fromKey'||f==='fromAddr') trip._fromGeo=null;
+    if(f==='toKey'||f==='toAddr') trip._toGeo=null;
     scheduleAutoFetch(trip);
   }
   // Switching a location to/from "Exact address…" changes which inputs show → rebuild the body.
