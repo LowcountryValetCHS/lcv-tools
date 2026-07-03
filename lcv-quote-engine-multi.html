@@ -897,8 +897,7 @@ async function geocodeLoc(loc){
   async function tryPlaces(){
     const body={
       textQuery: loc.addr,
-      locationBias:{ circle:{ center:{latitude:32.7833,longitude:-79.9333}, radius:80000.0 } },
-      maxResultCount:1
+      locationBias:{ circle:{ center:{latitude:32.7833,longitude:-79.9333}, radius:80000.0 } }
     };
     const res=await fetch("https://places.googleapis.com/v1/places:searchText",{
       method:"POST",
@@ -909,7 +908,11 @@ async function geocodeLoc(loc){
       },
       body:JSON.stringify(body)
     });
-    if(!res.ok) throw new Error("places "+res.status);
+    if(!res.ok){
+      let em='places '+res.status;
+      try{ const ej=await res.json(); if(ej.error&&ej.error.message) em='places '+res.status+': '+ej.error.message; }catch(_){}
+      throw new Error(em);
+    }
     const data=await res.json();
     const pl=data.places&&data.places[0];
     if(!pl||!pl.location) throw new Error("no place");
@@ -927,13 +930,17 @@ async function geocodeLoc(loc){
     return {lat:p.lat,lng:p.lng,exact:true,formatted:data.results[0].formatted_address};
   }
 
-  let out=null;
+  let out=null, placesErr=null, geoErr=null;
   try{ out=await tryPlaces(); }
-  catch(e1){ try{ out=await tryGeocode(); }catch(e2){ out=null; } }
+  catch(e1){ placesErr=e1; try{ out=await tryGeocode(); }catch(e2){ geoErr=e2; out=null; } }
 
   if(out){ geoCache[loc.addr]=out; return out; }
-  // A free-text exact entry has no stored fallback coords — surface the failure.
-  if(loc.exactEntry) throw new Error("couldn't find that place — try adding city & state, or a street address");
+  // A free-text exact entry has no stored fallback coords — surface the REAL failure to aid debugging.
+  if(loc.exactEntry){
+    console.error('Exact-address lookup failed for:', loc.addr, '| Places:', placesErr&&placesErr.message, '| Geocode:', geoErr&&geoErr.message);
+    const detail = (placesErr&&placesErr.message) ? (' ['+placesErr.message+']') : '';
+    throw new Error("couldn't find that place"+detail+" — check the browser console for the API error");
+  }
   return {lat:loc.lat,lng:loc.lng,exact:false};
 }
 function deptISOfor(trip){
@@ -974,6 +981,7 @@ async function fetchLegPair(from,to,departISO){
 // re-firing when any drive-time-affecting input (locations, date, time) changes,
 // but waiting for a pause and skipping if the inputs haven't actually changed.
 const _autoFetchTimers = {};
+function driveInputKey(trip){ return [trip.fromKey, trip.toKey, trip.fromAddr, trip.toAddr, trip.date, trip.time].join('|'); }
 
 function autoFetchEligible(trip){
   // retail only (partners use flat tables), standard-fleet airport/P2P/hourly, all inputs present
