@@ -92,6 +92,13 @@
   .hourly-typebar{margin-bottom:12px;padding-bottom:12px;border-bottom:1px dashed var(--line);}
   .hourly-typebar select{font-weight:600;}
   .loc-note{margin-top:6px;padding:7px 10px;background:#f3efe2;border-left:3px solid var(--brass);border-radius:3px;font-size:11.5px;color:var(--brass-deep);line-height:1.4;}
+  .ac-wrap{position:relative;}
+  .ac-list{position:absolute;left:0;right:0;top:100%;z-index:40;background:#fff;border:1px solid var(--line);border-top:none;border-radius:0 0 4px 4px;box-shadow:0 6px 18px rgba(0,0,0,.10);max-height:240px;overflow-y:auto;}
+  .ac-item{padding:8px 11px;cursor:pointer;border-bottom:1px solid #f0ede4;}
+  .ac-item:last-child{border-bottom:none;}
+  .ac-item.active,.ac-item:hover{background:var(--marsh-light);}
+  .ac-primary{font-size:13px;color:var(--ink);font-weight:600;}
+  .ac-secondary{font-size:11px;color:var(--ink-soft);margin-top:1px;}
   .otr-legs{margin-top:12px;padding:11px;background:#fbfaf6;border:1px solid var(--line);border-radius:5px;}
   .otr-legs-hd{font-size:11.5px;font-weight:700;color:var(--marsh);margin-bottom:8px;}
   .otr-analysis{margin-top:12px;}
@@ -878,7 +885,10 @@ function locNotes(key){ return (AREAS[key]&&AREAS[key].notes)||(AIRPORTS[key]&&A
 function locFieldHTML(keyField, addrField, keyVal, addrVal, optsFn){
   let h='<select data-f="'+keyField+'">'+optsFn(keyVal)+'</select>';
   if(keyVal===EXACT_KEY){
-    h+='<input type="text" data-f="'+addrField+'" value="'+(addrVal||'').replace(/"/g,'&quot;')+'" placeholder="Venue name or address (e.g. The Dewberry Charleston, or 102 Main St, Beaufort SC)" style="margin-top:6px;width:100%;">';
+    h+='<div class="ac-wrap" data-acwrap="'+addrField+'">'
+      + '<input type="text" data-f="'+addrField+'" data-ac="'+addrField+'" autocomplete="off" value="'+(addrVal||'').replace(/"/g,'&quot;')+'" placeholder="Start typing a venue or address…" style="margin-top:6px;width:100%;">'
+      + '<div class="ac-list" data-aclist="'+addrField+'" style="display:none;"></div>'
+      + '</div>';
   } else {
     const note=locNotes(keyVal);
     if(note) h+='<div class="loc-note">📍 '+note+'</div>';
@@ -942,6 +952,56 @@ async function geocodeLoc(loc){
     throw new Error("couldn't find that place"+detail+" — check the browser console for the API error");
   }
   return {lat:loc.lat,lng:loc.lng,exact:false};
+}
+
+// ---- PLACES AUTOCOMPLETE (New) ----
+// As the agent types, fetch predictions (debounced, session-tokened for cost control).
+// Selecting a prediction locks the exact place by ID, then resolves to coordinates — no ambiguity.
+function newSessionToken(){ return 'lcv-'+Date.now()+'-'+Math.random().toString(36).slice(2,10); }
+async function fetchPlacePredictions(input, sessionToken){
+  const q=(input||'').trim();
+  if(q.length<3) return []; // wait for a few characters
+  const body={
+    input:q,
+    locationBias:{ circle:{ center:{latitude:32.7833,longitude:-79.9333}, radius:50000.0 } },
+    sessionToken:sessionToken
+  };
+  const res=await fetch("https://places.googleapis.com/v1/places:autocomplete",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "X-Goog-Api-Key":MAPS_KEY },
+    body:JSON.stringify(body)
+  });
+  if(!res.ok){
+    let em='autocomplete '+res.status;
+    try{ const ej=await res.json(); if(ej.error&&ej.error.message) em+=': '+ej.error.message; }catch(_){}
+    throw new Error(em);
+  }
+  const data=await res.json();
+  const sugs=(data.suggestions||[]).map(s=>s.placePrediction).filter(Boolean);
+  return sugs.map(p=>({
+    placeId:p.placeId,
+    primary:(p.structuredFormat&&p.structuredFormat.mainText&&p.structuredFormat.mainText.text)||(p.text&&p.text.text)||'',
+    secondary:(p.structuredFormat&&p.structuredFormat.secondaryText&&p.structuredFormat.secondaryText.text)||'',
+    full:(p.text&&p.text.text)||''
+  }));
+}
+// Resolve a chosen place ID to coordinates + formatted address (ends the autocomplete session).
+async function resolvePlaceId(placeId, sessionToken){
+  const res=await fetch("https://places.googleapis.com/v1/places/"+encodeURIComponent(placeId),{
+    method:"GET",
+    headers:{
+      "X-Goog-Api-Key":MAPS_KEY,
+      "X-Goog-FieldMask":"location,formattedAddress,displayName",
+      ...(sessionToken?{"X-Goog-Session-Token":sessionToken}:{})
+    }
+  });
+  if(!res.ok) throw new Error("place details "+res.status);
+  const p=await res.json();
+  if(!p.location) throw new Error("no location for place");
+  return {
+    lat:p.location.latitude, lng:p.location.longitude, exact:true,
+    formatted:(p.displayName&&p.displayName.text?p.displayName.text+' — ':'')+(p.formattedAddress||'')
+  };
 }
 function deptISOfor(trip){
   if(!trip.date) return {iso:null,past:false};
@@ -1613,7 +1673,36 @@ function refreshSubtotalUI(trip){
 }
 
 // delete + live-times button (delegated click)
+// Autocomplete keyboard navigation
+// Dismiss autocomplete dropdowns on outside click
+document.addEventListener('click',e=>{
+  if(e.target.closest('.ac-wrap')) return;
+  document.querySelectorAll('.ac-list').forEach(l=>{ l.style.display='none'; });
+});
+
+$('tripList').addEventListener('keydown',e=>{
+  const acField=e.target.dataset.ac;
+  if(!acField) return;
+  const st=_acState[acField]; if(!st||!st.preds||!st.preds.length) return;
+  const card=e.target.closest('[data-tid]'); if(!card) return;
+  const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+  if(e.key==='ArrowDown'){ e.preventDefault(); st.active=Math.min((st.active|0)+1, st.preds.length-1); renderAcList(acField, st.preds, st.active); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); st.active=Math.max((st.active|0)-1, 0); renderAcList(acField, st.preds, st.active); }
+  else if(e.key==='Enter'){ if(st.active>=0){ e.preventDefault(); acSelect(trip, acField, st.preds[st.active]); } }
+  else if(e.key==='Escape'){ const list=acListEl(acField); if(list){ list.style.display='none'; } }
+});
+
 $('tripList').addEventListener('click',e=>{
+  // Autocomplete: click a suggestion
+  const acItem=e.target.closest('.ac-item');
+  if(acItem){
+    const list=acItem.closest('.ac-list'); const addrField=list&&list.dataset.aclist;
+    const card=e.target.closest('[data-tid]'); if(!card||!addrField) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const st=_acState[addrField]; const idx=+acItem.dataset.acidx;
+    if(st&&st.preds&&st.preds[idx]){ acSelect(trip, addrField, st.preds[idx]); }
+    return;
+  }
   const del=e.target.closest('[data-del]');
   if(del){ delTrip(del.dataset.del); return; }
   const live=e.target.closest('[data-live]');
@@ -1641,7 +1730,66 @@ $('tripList').addEventListener('click',e=>{
     return;
   }
 });
+// ---- Autocomplete controller (delegated on tripList) ----
+const _acState = {}; // per addrField: {token, timer, preds, active, trip}
+function acListEl(addrField){ return document.querySelector('[data-aclist="'+addrField+'"]'); }
+function acInputEl(card, addrField){ return card.querySelector('[data-ac="'+addrField+'"]'); }
+function renderAcList(addrField, preds, activeIdx){
+  const list=acListEl(addrField); if(!list) return;
+  if(!preds||!preds.length){ list.style.display='none'; list.innerHTML=''; return; }
+  list.innerHTML=preds.map((p,i)=>
+    '<div class="ac-item'+(i===activeIdx?' active':'')+'" data-acidx="'+i+'">'
+    + '<div class="ac-primary">'+escapeHtml(p.primary)+'</div>'
+    + (p.secondary?'<div class="ac-secondary">'+escapeHtml(p.secondary)+'</div>':'')
+    + '</div>'
+  ).join('');
+  list.style.display='block';
+}
+function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function acSelect(trip, addrField, pred){
+  const st=_acState[addrField]||{};
+  // store the typed/selected text and lock coords by place ID (no ambiguity)
+  const keyForGeo = addrField==='fromAddr' ? '_fromGeo' : addrField==='toAddr' ? '_toGeo' : null;
+  trip[addrField]=pred.primary+(pred.secondary?(', '+pred.secondary):'');
+  try{
+    const resolved=await resolvePlaceId(pred.placeId, st.token);
+    if(keyForGeo) trip[keyForGeo]={lat:resolved.lat,lng:resolved.lng};
+    trip[addrField]=resolved.formatted||trip[addrField];
+    // treat these inputs as ready; trigger a drive-time fetch using the locked coords
+    scheduleAutoFetch(trip);
+  }catch(err){
+    console.error('Place details failed:', err.message);
+  }
+  _acState[addrField]={}; // end session
+  const list=acListEl(addrField); if(list){ list.style.display='none'; list.innerHTML=''; }
+  // reflect the chosen text in the input + re-render card so downstream (gate, etc.) updates
+  renderTrips(); renderSummary();
+}
+
 $('tripList').addEventListener('input',e=>{
+  // Autocomplete typing
+  const acField=e.target.dataset.ac;
+  if(acField){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    trip[acField]=e.target.value; // keep the raw text
+    trip[acField==='fromAddr'?'_fromGeo':'_toGeo']=null; // typing invalidates any locked coord
+    let st=_acState[acField]; if(!st){ st=_acState[acField]={}; }
+    if(!st.token) st.token=newSessionToken();
+    st.active=-1;
+    clearTimeout(st.timer);
+    const val=e.target.value;
+    st.timer=setTimeout(async()=>{
+      if(!mapsReady()){ return; }
+      try{
+        const preds=await fetchPlacePredictions(val, st.token);
+        st.preds=preds;
+        renderAcList(acField, preds, -1);
+      }catch(err){ console.error('Autocomplete:', err.message); }
+    }, 250);
+    return; // don't fall through to the generic field handler
+  }
   // Hourly sub-type selector — swap the trip kind in place, keep it in the hourly family.
   if(e.target.dataset.hourlytype){
     const card=e.target.closest('[data-tid]'); if(!card) return;
