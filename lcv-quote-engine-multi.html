@@ -336,6 +336,55 @@ function otrOptions(base){
 }
 
 // ============================================================================
+// GAP-SPLIT PLANNER (advisory) — hourly & bus idle-gap decision.
+// Default: bill the whole committed span (service1 + gap + service2). EXCEPTION: split
+// into two separate hourly blocks ONLY when (a) each block independently meets its minimum
+// hours AND (b) splitting is actually cheaper than the continuous span. Wait/standby never splits.
+// perHourRate: for hourly use the STD tier rate; for bus use the effective demand rate.
+// The caller supplies a priceHours(hrs) fn so the same logic serves both models' pricing.
+function gapSplitOptions(cfg){
+  // cfg = { seg1Hrs, gapHrs, seg2Hrs, minHrs, isStandby, priceHours(hrs), deadheadHrs }
+  const seg1=Math.max(0,+cfg.seg1Hrs||0), gap=Math.max(0,+cfg.gapHrs||0), seg2=Math.max(0,+cfg.seg2Hrs||0);
+  const dh=Math.max(0,+cfg.deadheadHrs||0);
+  const minHrs=cfg.minHrs||2;
+  const priceHours=cfg.priceHours;
+  // Continuous: whole span (both service blocks + the gap) + dead-head, floored at min.
+  const contHours=Math.max(minHrs, seg1+gap+seg2+dh);
+  const contPrice=priceHours(contHours);
+  const opts=[{
+    key:'through', label:'Bill through (continuous)',
+    hours:contHours, price:contPrice, legal:true,
+    note:'Vehicle held the whole span including the '+gap.toFixed(1)+'h gap. Default for hourly; required for Wait/Standby.'
+  }];
+  if(cfg.isStandby){
+    opts[0].recommended=true;
+    opts[0].note='Wait/Standby — always bills through, never splits. Vehicle stays committed across the gap.';
+    return {opts, recommended:'through'};
+  }
+  // Split: two independent blocks, each floored at min, each carrying its own dead-head (round trip).
+  const block1=Math.max(minHrs, seg1+dh);
+  const block2=Math.max(minHrs, seg2+dh);
+  const bothMeetMin = (seg1+dh)>=minHrs && (seg2+dh)>=minHrs; // do the raw blocks clear the min without padding?
+  const splitPrice=priceHours(block1)+priceHours(block2);
+  const splitViable = bothMeetMin; // rule (a): each block independently meets its minimum
+  const splitCheaper = splitPrice < contPrice; // rule (b)
+  opts.push({
+    key:'split', label:'Split into two blocks',
+    hours:block1+block2, price:splitPrice, legal:splitViable,
+    block1, block2,
+    note: !splitViable
+      ? 'Not offered: a block falls under the '+minHrs+'h minimum ('+(seg1+dh).toFixed(1)+'h / '+(seg2+dh).toFixed(1)+'h) — splitting would just pad back to the minimum.'
+      : (splitCheaper
+          ? 'Two separate hourly blocks ('+block1.toFixed(1)+'h + '+block2.toFixed(1)+'h). Vehicle released during the gap. Cheaper here.'
+          : 'Both blocks meet the minimum, but splitting is not cheaper than billing through — bill through.')
+  });
+  // Recommend: split only if viable AND cheaper; otherwise bill through.
+  const rec = (splitViable && splitCheaper) ? 'split' : 'through';
+  opts.forEach(o=>o.recommended=(o.key===rec));
+  return {opts, recommended:rec};
+}
+
+// ============================================================================
 // BUS / MOTORCOACH MODEL — demand-multiplied hourly (retail).
 // Effective /hr = base × season × day × time, floored at 70% of base.
 // Committed hours (service + dead-head + any gap) × effective rate = base fare.
@@ -1144,6 +1193,8 @@ function makeTrip(kind){
     // bus inputs
     busType:'mc4957', busHours:6,
     busSeasonOv:'', busDayOv:'', busTimeOv:'', // optional manual overrides ('' = auto from date/time)
+    // gap-split planner (hourly/bus advisory)
+    gapPlannerOn:false, gapSeg1:2, gapGap:4, gapSeg2:2, gapStandby:false,
     // vintage inputs
     vintageType:'convertible', vintageServiceHrs:2, vintageNonconsecHrs:0, vintageDeadheadMin:40,
     // OTR inputs
@@ -1380,6 +1431,34 @@ function otrPlannerHTML(trip){
   h+='</div></details>';
   return h;
 }
+// Gap-split advisory panel for hourly & bus. priceHoursFn maps committed hours → base $.
+function gapPlannerHTML(trip, priceHoursFn, minHrs){
+  const on=trip.gapPlannerOn;
+  let h='<details class="drive-override"'+(on?' open':'')+' data-gapplanner="1"><summary>◎ Idle-gap planner (bill-through vs. split)</summary>';
+  h+='<div style="margin-top:10px;">';
+  h+='<div class="hint" style="margin-top:0;">For a booking with an idle gap (e.g. drop at the venue, pick up hours later), enter the two service blocks and the gap. The planner compares billing the whole span vs. two separate blocks, and recommends the cheaper legal option. Wait/Standby always bills through.</div>';
+  h+='<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="gapStandby"'+(trip.gapStandby?' checked':'')+'><label>Wait/Standby (must bill through — vehicle stays committed)</label></div>';
+  h+='<div class="row3" style="margin-top:8px;">'
+    + '<div><label style="margin-top:0;">1st service (h)</label><input type="number" data-f="gapSeg1" value="'+trip.gapSeg1+'" min="0" step="0.5"></div>'
+    + '<div><label style="margin-top:0;">Gap (h)</label><input type="number" data-f="gapGap" value="'+trip.gapGap+'" min="0" step="0.5"></div>'
+    + '<div><label style="margin-top:0;">2nd service (h)</label><input type="number" data-f="gapSeg2" value="'+trip.gapSeg2+'" min="0" step="0.5"></div>'
+    + '</div>';
+  const res=gapSplitOptions({
+    seg1Hrs:trip.gapSeg1, gapHrs:trip.gapGap, seg2Hrs:trip.gapSeg2,
+    minHrs:minHrs, isStandby:trip.gapStandby, priceHours:priceHoursFn, deadheadHrs:0
+  });
+  h+='<div class="otr-opts" style="margin-top:10px;">';
+  res.opts.forEach(o=>{
+    h+='<div class="otr-opt'+(o.legal?'':' illegal')+(o.recommended?' rec':'')+'">'
+      + '<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(o.recommended?' <span class="rec-badge">recommended</span>':'')+'</div>'
+      + '<div class="otr-opt-price">'+M(o.price)+' <span class="otr-ach">'+o.hours.toFixed(1)+'h committed base</span></div>'
+      + '<div class="otr-opt-note">'+o.note+'</div>'
+      + '</div>';
+  });
+  h+='</div></div></details>';
+  return h;
+}
+
 function vintageBodyHTML(trip){
   const v=VINTAGE[trip.vintageType]||VINTAGE.convertible;
   return ''
@@ -1429,7 +1508,8 @@ function busBodyHTML(trip){
     +     '<div><label style="margin-top:0;">Time</label><select data-f="busTimeOv"><option value="">auto ('+time+')</option><option value="prime"'+timeSel('prime')+'>Prime 1.00</option><option value="offprime"'+timeSel('offprime')+'>Off-prime 0.85</option></select></div>'
     +   '</div>'
     + '</details>'
-    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>';
+    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
+    + gapPlannerHTML(trip, (hrs)=>rate*hrs, minH);
 }
 
 // The hourly "family" — one entry point, sub-typed on the card. Each still maps to its own LA type.
@@ -1532,7 +1612,8 @@ function standardFleetBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Gratuity %</label><input type="number" data-f="gratuityPct" value="'+trip.gratuityPct+'" min="0" step="0.5"></div>'
     +   '<div><label style="margin-top:0;">Trip discount %</label><input type="number" data-f="discountPct" value="'+trip.discountPct+'" min="0" step="0.5"></div>'
     + '</div>'
-    + '<div class="hint">'+billNote+' Click <strong>Live drive times</strong> to fill std/busy from Google (geocoded to the exact venue); the model prices on their median. Override manually if needed.</div>';
+    + '<div class="hint">'+billNote+' Click <strong>Live drive times</strong> to fill std/busy from Google (geocoded to the exact venue); the model prices on their median. Override manually if needed.</div>'
+    + (k==='hourly' ? gapPlannerHTML(trip, (hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)), 2) : '');
 }
 
 // Build the detailed per-trip breakdown (planner-style line items) from computeTrip's captured data.
@@ -1827,7 +1908,7 @@ $('tripList').addEventListener('input',e=>{
   const f=e.target.dataset.f; if(!f) return;
   const card=e.target.closest('[data-tid]'); if(!card) return;
   const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
-  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle'];
+  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle','gapSeg1','gapGap','gapSeg2'];
   if(e.target.type==='checkbox'){
     trip[f]=e.target.checked;
   } else {
@@ -1859,6 +1940,42 @@ $('tripList').addEventListener('input',e=>{
   const busStructural = trip.kind==='bus' && (f==='busType'||f==='date'||f==='time'||f==='busSeasonOv'||f==='busDayOv'||f==='busTimeOv');
   const vintageStructural = trip.kind==='vintage' && f==='vintageType';
   const otrStructural = trip.kind==='otr' && (f==='otrDrivers'||f==='otrBus'||f==='otrSeason');
+  // Gap planner: keep it open; refresh just the options list (not the inputs) to preserve focus.
+  if(f==='gapSeg1'||f==='gapGap'||f==='gapSeg2'||f==='gapStandby'){
+    trip.gapPlannerOn=true;
+    if(f==='gapStandby'){
+      // checkbox — safe to rebuild the whole panel (shows/hides the split option)
+      computeTrip(trip);
+      const body=card.querySelector('.trip-body');
+      if(body) body.innerHTML = tripBodyHTML(trip) + tripBreakdownHTML(trip);
+      refreshSubtotalUI(trip); renderSummary();
+      return;
+    }
+    // numeric — refresh only the options block inside the gap planner
+    const planner=card.querySelector('[data-gapplanner] .otr-opts');
+    if(planner){
+      let priceHoursFn, minH;
+      if(trip.kind==='bus'){
+        const d=trip.date?new Date(trip.date+'T00:00:00'):null;
+        const season=trip.busSeasonOv||(d?busSeasonOf(d.getMonth()):'peak');
+        const day=trip.busDayOv||(d?busDayOf(d.getDay()):'sat');
+        const time=trip.busTimeOv||busTimeOf(trip.time);
+        const b=BUSES[trip.busType]||BUSES.mc4957;
+        const rate=b.base*Math.max(BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time],BUS_FLOOR);
+        priceHoursFn=(hrs)=>rate*hrs; minH=busMinHours(season,day,time);
+      } else {
+        priceHoursFn=(hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)); minH=2;
+      }
+      const res=gapSplitOptions({seg1Hrs:trip.gapSeg1,gapHrs:trip.gapGap,seg2Hrs:trip.gapSeg2,minHrs:minH,isStandby:trip.gapStandby,priceHours:priceHoursFn,deadheadHrs:0});
+      planner.innerHTML=res.opts.map(function(o){
+        return '<div class="otr-opt'+(o.legal?'':' illegal')+(o.recommended?' rec':'')+'">'
+        +'<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(o.recommended?' <span class="rec-badge">recommended</span>':'')+'</div>'
+        +'<div class="otr-opt-price">'+M(o.price)+' <span class="otr-ach">'+o.hours.toFixed(1)+'h committed base</span></div>'
+        +'<div class="otr-opt-note">'+o.note+'</div></div>';
+      }).join('');
+    }
+    return;
+  }
   if(dewStructural || busStructural || vintageStructural || otrStructural){
     computeTrip(trip);
     const body=card.querySelector('.trip-body');
