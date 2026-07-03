@@ -91,6 +91,9 @@
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
   .hourly-typebar{margin-bottom:12px;padding-bottom:12px;border-bottom:1px dashed var(--line);}
   .hourly-typebar select{font-weight:600;}
+  .loc-note{margin-top:6px;padding:7px 10px;background:#f3efe2;border-left:3px solid var(--brass);border-radius:3px;font-size:11.5px;color:var(--brass-deep);line-height:1.4;}
+  .otr-legs{margin-top:12px;padding:11px;background:#fbfaf6;border:1px solid var(--line);border-radius:5px;}
+  .otr-legs-hd{font-size:11.5px;font-weight:700;color:var(--marsh);margin-bottom:8px;}
   .otr-analysis{margin-top:12px;}
   .otr-verdict{font-size:12.5px;font-weight:700;padding:8px 11px;border-radius:4px;margin-bottom:8px;}
   .otr-verdict.ok{background:#e7f2ea;color:#2f7d50;border:1px solid #99c7ab;}
@@ -640,11 +643,12 @@ function priceTrip(trip){
     if(deadheadHrs>0){ base+=deadheadHrs*VINTAGE_CONSEC_RATE; parts.push(deadheadHrs.toFixed(2)+'h dead-head × $'+VINTAGE_CONSEC_RATE); }
     lines.push({lbl:v.name+' service', val:null, txt:svcHrs.toFixed(1)+'h'+(nonconsecHrs>0?' ('+nonconsecHrs.toFixed(1)+'h non-consec)':''), sub:true});
     lines.push({lbl:'Base ('+parts.join(' + ')+')', val:base});
-    // late-night (in base, service revenue) + holiday
-    if(isLateNight(trip.time)){
-      const lh=Math.max(35, svcHrs*35);
+    // late-night (in base, service revenue): only hours overlapping the 11:30pm–6:30am window
+    const vLnHrs=lateNightHours(trip.time, svcHrs);
+    if(vLnHrs>0){
+      const lh=Math.max(35, vLnHrs*35);
       base+=lh;
-      lines.push({lbl:'Late-night surcharge ($35/hr · $35 min)', val:lh, sub:true});
+      lines.push({lbl:'Late-night surcharge ('+vLnHrs.toFixed(1)+'h in window × $35 · $35 min)', val:lh, sub:true});
     }
     const holidayName=holidayOf(trip.date);
     const holidayPct = holidayName ? 0.30 : 0;
@@ -729,12 +733,14 @@ function priceTrip(trip){
   lines.push({lbl:'Billable hrs', val:null, txt:billHours.toFixed(2)+(billedHrs>billHours?' → '+billedHrs.toFixed(2)+' (min)':''), sub:true});
   lines.push({lbl:usedFloor?'Base (vehicle floor)':'Base ('+billedHrs.toFixed(2)+'h × $'+rate+')', val:base});
 
-  // ---- LATE-NIGHT (11:30pm–6:30am): service revenue → IN base (gets gratuity). ----
-  if(isLateNight(trip.time)){
-    const svcHrs = airport ? (median/60) : (k==='hourly' ? (+trip.hours||0) : (median/60));
-    const lh=Math.max(35, svcHrs*35);
+  // ---- LATE-NIGHT (11:30pm–6:30am): $35/hr on SERVICE hours falling in the window. ----
+  // Service revenue → IN base (gets gratuity). Only the portion overlapping the window is charged.
+  const svcHrsForLN = airport ? (median/60) : (k==='hourly' ? (+trip.hours||0) : (median/60));
+  const lnHrs = lateNightHours(trip.time, svcHrsForLN);
+  if(lnHrs>0){
+    const lh=Math.max(35, lnHrs*35);
     base+=lh;
-    lines.push({lbl:'Late-night surcharge ($35/hr · $35 min)', val:lh, sub:true});
+    lines.push({lbl:'Late-night surcharge ('+lnHrs.toFixed(1)+'h in window × $35 · $35 min)', val:lh, sub:true});
   }
 
   // ---- HOLIDAY (auto from date): % of base, folded into base BEFORE gratuity (handled in computeTrip). ----
@@ -752,7 +758,24 @@ function priceTrip(trip){
   return {base, lines, note:(STD[veh]?STD[veh].name:veh)+' '+(airport?'airport':(k==='hourly'?'hourly':'P2P')), holidayPct, holidayName, passthroughs};
 }
 
-// late-night window: pickup time 11:30pm–6:30am (≥23.5h or <6.5h)
+// Late-night window: 11:30pm–6:30am. Returns the number of SERVICE hours that fall
+// within the window, given a start time (HH:MM) and service duration in hours.
+// A minute is "late-night" if its time-of-day is >= 23:30 OR < 6:30. We walk the
+// service span (which can run past midnight) and count minutes meeting that test.
+function isLateMinute(minOfDay){
+  const t=((minOfDay%1440)+1440)%1440; // normalize to 0..1439
+  return t>=23.5*60 || t<6.5*60;
+}
+function lateNightHours(startTimeStr, serviceHrs){
+  if(!startTimeStr || !serviceHrs || serviceHrs<=0) return 0;
+  const [h,m]=startTimeStr.split(':').map(Number);
+  const startMin=h*60+m;
+  const totalMin=Math.round(serviceHrs*60);
+  let count=0;
+  for(let i=0;i<totalMin;i++){ if(isLateMinute(startMin+i)) count++; }
+  return count/60;
+}
+// True if the START time is inside the window (legacy helper).
 function isLateNight(timeStr){
   if(!timeStr) return false;
   const [h,m]=timeStr.split(':').map(Number);
@@ -802,18 +825,52 @@ const AREAS={
   wa:{name:'West Ashley',lat:32.7993,lng:-80.0118},
   kiawah:{name:'Kiawah corridor',lat:32.6087,lng:-80.0850},
   beaches:{name:'Beaches/IOP',lat:32.7866,lng:-79.7726},
-  lowndes:{name:'Lowndes Grove',addr:'266 St Margaret St, Charleston, SC 29403',lat:32.7967,lng:-79.9637},
-  magnolia:{name:'Magnolia Plantation',addr:'3550 Ashley River Rd, Charleston, SC 29414',lat:32.8780,lng:-80.0876},
+  lowndes:{name:'Lowndes Grove',addr:'266 St Margaret St, Charleston, SC 29403',lat:32.7967,lng:-79.9637,notes:'Long private drive off St Margaret St — allow a few extra minutes. Confirm event entrance vs. main house with the coordinator.'},
+  magnolia:{name:'Magnolia Plantation',addr:'3550 Ashley River Rd, Charleston, SC 29414',lat:32.8780,lng:-80.0876,notes:'Gated entrance on Ashley River Rd; give the guest name to the gate. Pickups at the visitor center lot, not the house.'},
   boone:{name:'Boone Hall',addr:'1235 Long Point Rd, Mount Pleasant, SC 29464',lat:32.8444,lng:-79.8113},
-  sanctuary:{name:'Sanctuary (Kiawah)',addr:'1 Sanctuary Beach Dr, Kiawah Island, SC 29455',lat:32.6045,lng:-80.0889},
-  oceancourse:{name:'Ocean Course',addr:'1000 Ocean Course Dr, Kiawah Island, SC 29455',lat:32.6068,lng:-80.0469},
+  sanctuary:{name:'Sanctuary (Kiawah)',addr:'1 Sanctuary Beach Dr, Kiawah Island, SC 29455',lat:32.6045,lng:-80.0889,notes:'Kiawah gate pass required (auto-added). Pull up under the main porte-cochère; bell staff will direct.'},
+  oceancourse:{name:'Ocean Course',addr:'1000 Ocean Course Dr, Kiawah Island, SC 29455',lat:32.6068,lng:-80.0469,notes:'Kiawah gate pass required (auto-added). Clubhouse drop only — no beach access.'},
   dunlin:{name:'The Dunlin',addr:'40 Jenkins Point Rd, Johns Island, SC 29455',lat:32.5790,lng:-80.1730}
 };
+// Exact-address mode: a trip location key of '__exact__' uses the trip's free-text address (geocoded live).
+const EXACT_KEY='__exact__';
 const driveCache={}, geoCache={};
 function mapsReady(){ return typeof MAPS_KEY==='string' && MAPS_KEY.trim().length>10; }
-function locOpts(sel){ return Object.keys(AREAS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AREAS[k].name+'</option>').join(''); }
-function airportOpts(sel){ return Object.keys(AIRPORTS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AIRPORTS[k].name+'</option>').join(''); }
-function resolveLoc(key){ if(AIRPORTS[key]) return AIRPORTS[key]; if(AREAS[key]&&AREAS[key].lat!=null) return AREAS[key]; return null; }
+function locOpts(sel){
+  let o=Object.keys(AREAS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AREAS[k].name+'</option>').join('');
+  o+='<option value="'+EXACT_KEY+'"'+(sel===EXACT_KEY?' selected':'')+'>✎ Exact address…</option>';
+  return o;
+}
+function airportOpts(sel){
+  let o=Object.keys(AIRPORTS).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+AIRPORTS[k].name+'</option>').join('');
+  o+='<option value="'+EXACT_KEY+'"'+(sel===EXACT_KEY?' selected':'')+'>✎ Exact address…</option>';
+  return o;
+}
+// resolveLoc(key, addrText?) — for '__exact__', build a loc from the free-text address (geocoded live).
+function resolveLoc(key, addrText){
+  if(key===EXACT_KEY){
+    const a=(addrText||'').trim();
+    return a ? {name:a, addr:a, exactEntry:true} : null;
+  }
+  if(AIRPORTS[key]) return AIRPORTS[key];
+  if(AREAS[key]&&AREAS[key].lat!=null) return AREAS[key];
+  return null;
+}
+// Notes for a selected known venue (null for areas without notes or exact entries).
+function locNotes(key){ return (AREAS[key]&&AREAS[key].notes)||(AIRPORTS[key]&&AIRPORTS[key].notes)||null; }
+
+// Render a location field: dropdown (with "Exact address…" option), an address box when in exact mode,
+// and a venue-notes callout when a noted venue is selected.
+function locFieldHTML(keyField, addrField, keyVal, addrVal, optsFn){
+  let h='<select data-f="'+keyField+'">'+optsFn(keyVal)+'</select>';
+  if(keyVal===EXACT_KEY){
+    h+='<input type="text" data-f="'+addrField+'" value="'+(addrVal||'').replace(/"/g,'&quot;')+'" placeholder="Street, City, State (e.g. 102 Main St, Beaufort SC)" style="margin-top:6px;width:100%;">';
+  } else {
+    const note=locNotes(keyVal);
+    if(note) h+='<div class="loc-note">📍 '+note+'</div>';
+  }
+  return h;
+}
 
 async function geocodeLoc(loc){
   if(!loc) return null;
@@ -824,12 +881,16 @@ async function geocodeLoc(loc){
     const res=await fetch(url);
     if(!res.ok) throw new Error("geocode "+res.status);
     const data=await res.json();
-    if(data.status!=='OK'||!data.results||!data.results[0]) throw new Error("geocode "+data.status);
+    if(data.status!=='OK'||!data.results||!data.results[0]) throw new Error("address not found");
     const p=data.results[0].geometry.location;
-    const out={lat:p.lat,lng:p.lng,exact:true};
+    const out={lat:p.lat,lng:p.lng,exact:true,formatted:data.results[0].formatted_address};
     geoCache[loc.addr]=out;
     return out;
-  }catch(e){ return {lat:loc.lat,lng:loc.lng,exact:false}; }
+  }catch(e){
+    // A free-text exact entry has no stored fallback coords — surface the failure so the agent fixes the address.
+    if(loc.exactEntry) throw new Error("couldn't find that address — check spelling / add city & state");
+    return {lat:loc.lat,lng:loc.lng,exact:false};
+  }
 }
 function deptISOfor(trip){
   if(!trip.date) return {iso:null,past:false};
@@ -869,7 +930,7 @@ async function fetchLegPair(from,to,departISO){
 // re-firing when any drive-time-affecting input (locations, date, time) changes,
 // but waiting for a pause and skipping if the inputs haven't actually changed.
 const _autoFetchTimers = {};
-function driveInputKey(trip){ return [trip.fromKey, trip.toKey, trip.date, trip.time].join('|'); }
+
 function autoFetchEligible(trip){
   // retail only (partners use flat tables), standard-fleet airport/P2P/hourly, all inputs present
   if(isPartnerRouting(currentRouting())) return false;
@@ -877,7 +938,7 @@ function autoFetchEligible(trip){
   const usesLocations = (k==='fromairport'||k==='toairport'||k==='p2p'||k==='hourly');
   if(!usesLocations) return false;
   if(!mapsReady() || !trip.date) return false;
-  if(!resolveLoc(trip.fromKey) || !resolveLoc(trip.toKey)) return false;
+  if(!resolveLoc(trip.fromKey, trip.fromAddr) || !resolveLoc(trip.toKey, trip.toAddr)) return false;
   return true;
 }
 function scheduleAutoFetch(trip){
@@ -899,7 +960,7 @@ async function refreshTripTimes(trip, statusEl){
   if(!mapsReady()){ if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Add your Maps API key to the file to enable live times.</span>'; return; }
   if(!trip.date){ if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Set a service date on this trip first.</span>'; return; }
   try{
-    const fromLoc=resolveLoc(trip.fromKey), toLoc=resolveLoc(trip.toKey);
+    const fromLoc=resolveLoc(trip.fromKey, trip.fromAddr), toLoc=resolveLoc(trip.toKey, trip.toAddr);
     if(!fromLoc && !toLoc) throw new Error("select both a pickup and dropoff");
     if(!fromLoc) throw new Error("select a pickup location");
     if(!toLoc) throw new Error("select a dropoff location");
@@ -975,9 +1036,11 @@ function makeTrip(kind){
     otrTolls:0, otrReliefShuttle:0,
     // OTR planner (advisory) — per-day drive/on-duty estimates
     otrPlannerOn:false,
+    otrPickupAddr:'', otrDestAddr:'',
     otrTimeline:[ {label:'Day 1', driveHrs:3, onDutyHrs:5}, {label:'Day 2', driveHrs:8, onDutyHrs:11} ],
     otrSameDayArrival:true,
     fromKey:'none', toKey:'none',   // location dropdown selections
+    fromAddr:'', toAddr:'',          // free-text exact addresses when key === '__exact__'
     driveStd:20, driveBusy:28,
     date:'', time:'14:00',
     // partner-routing inputs (Dewberry etc.)
@@ -1145,6 +1208,14 @@ function otrBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Round-trip miles (from Hollywood)</label><input type="number" data-f="otrMiles" value="'+trip.otrMiles+'" min="0"></div>'
     +   '<div><label style="margin-top:0;">Tolls / permits (pass-through)</label><input type="number" data-f="otrTolls" value="'+trip.otrTolls+'" min="0"></div>'
     + '</div>'
+    + '<div class="otr-legs">'
+    +   '<div class="otr-legs-hd">Trip addresses (exact — OTR does not use general areas)</div>'
+    +   '<div class="row2">'
+    +     '<div><label style="margin-top:0;">Primary pickup address</label><input type="text" data-f="otrPickupAddr" value="'+(trip.otrPickupAddr||'').replace(/"/g,'&quot;')+'" placeholder="e.g. Francis Marion University, Florence SC"></div>'
+    +     '<div><label style="margin-top:0;">Far destination address</label><input type="text" data-f="otrDestAddr" value="'+(trip.otrDestAddr||'').replace(/"/g,'&quot;')+'" placeholder="e.g. University of ___, City ST"></div>'
+    +   '</div>'
+    +   '<div class="hint" style="margin-top:6px;">Origin is always the Hollywood yard (added automatically as the positioning leg). Live drive-time auto-fill for the planner\'s duty hours — including the Hollywood positioning as duty time — is the next increment; for now enter the leg hours in the planner below.</div>'
+    + '</div>'
     + (drivers>1 ? '<div class="row2" style="margin-top:10px;"><div><label style="margin-top:0;">Relief-driver positioning shuttle $</label><input type="number" data-f="otrReliefShuttle" value="'+trip.otrReliefShuttle+'" min="0"></div><div></div></div>' : '')
     + '<div class="bus-rate">Est. cost-up base: <strong>$'+est.toFixed(2)+'</strong> <span class="bus-factors">(driver + fuel $'+fuel.toFixed(0)+' + lodging + per diem + vehicle day rate'+(drivers>1?' × '+drivers+' drivers':'')+')</span> — before 20% gratuity + 4% card</div>'
     + '<div class="hint">Second driver (relief) doubles driver/per-diem/lodging and adds a positioning shuttle. Used only when one-way driving exceeds a single FMCSA duty day and same-day arrival is required. Tolls/permits are pass-through (no markup).</div>'
@@ -1307,16 +1378,16 @@ function standardFleetBodyHTML(trip){
   }
   if(k==='fromairport'){
     fromLbl='Pickup (airport)'; toLbl='Dropoff (area)';
-    fromPicker='<select data-f="fromKey">'+airportOpts(trip.fromKey)+'</select>';
-    toPicker='<select data-f="toKey">'+locOpts(trip.toKey)+'</select>';
+    fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr,airportOpts);
+    toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr,locOpts);
   } else if(k==='toairport'){
     fromLbl='Pickup (area)'; toLbl='Dropoff (airport)';
-    fromPicker='<select data-f="fromKey">'+locOpts(trip.fromKey)+'</select>';
-    toPicker='<select data-f="toKey">'+airportOpts(trip.toKey)+'</select>';
+    fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr,locOpts);
+    toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr,airportOpts);
   } else { // p2p / hourly
     fromLbl='Pickup / from (area)'; toLbl=(k==='hourly'?'Primary area':'Dropoff / to (area)');
-    fromPicker='<select data-f="fromKey">'+locOpts(trip.fromKey)+'</select>';
-    toPicker='<select data-f="toKey">'+locOpts(trip.toKey)+'</select>';
+    fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr,locOpts);
+    toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr,locOpts);
   }
   const hoursField = (k==='hourly')
     ? '<div><label style="margin-top:0;">Booked hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
@@ -1561,9 +1632,19 @@ $('tripList').addEventListener('input',e=>{
   }
   // Auto-fetch live drive times when a drive-time-affecting input changes (debounced + de-duped).
   // Manual override of driveStd/driveBusy should NOT trigger a re-fetch (agent is setting them by hand).
-  if(f==='fromKey'||f==='toKey'||f==='date'||f==='time'){
+  if(f==='fromKey'||f==='toKey'||f==='date'||f==='time'||f==='fromAddr'||f==='toAddr'){
     scheduleAutoFetch(trip);
   }
+  // Switching a location to/from "Exact address…" changes which inputs show → rebuild the body.
+  if((f==='fromKey'||f==='toKey') && (e.target.value===EXACT_KEY || trip['_prev_'+f]===EXACT_KEY)){
+    computeTrip(trip);
+    const body=card.querySelector('.trip-body');
+    if(body) body.innerHTML=tripBodyHTML(trip)+tripBreakdownHTML(trip);
+    refreshSubtotalUI(trip); renderSummary();
+    trip['_prev_'+f]=e.target.value;
+    return;
+  }
+  if(f==='fromKey'||f==='toKey') trip['_prev_'+f]=e.target.value;
   if(f==='driveStd'||f==='driveBusy'){
     trip._lastFetchKey=driveInputKey(trip); // manual edit — treat current inputs as "settled", suppress auto-refetch
   }
