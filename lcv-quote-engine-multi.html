@@ -1009,7 +1009,11 @@ async function refreshTripTimes(trip, statusEl){
     if(!fromLoc) throw new Error("select a pickup location");
     if(!toLoc) throw new Error("select a dropoff location");
     if(statusEl) statusEl.textContent='Resolving locations…';
-
+    const [from,to]=await Promise.all([geocodeLoc(fromLoc),geocodeLoc(toLoc)]);
+    // store resolved coords so gate detection (and future distance logic) can use exact-address positions
+    trip._fromGeo={lat:from.lat,lng:from.lng};
+    trip._toGeo={lat:to.lat,lng:to.lng};
+    if(statusEl) statusEl.textContent='Fetching live drive times…';
     const dep=deptISOfor(trip);
     const pair=await fetchLegPair(from,to,dep.iso);
     trip.driveStd=pair.std; trip.driveBusy=pair.busy;
