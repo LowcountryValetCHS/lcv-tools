@@ -1673,7 +1673,7 @@ function busBodyHTML(trip){
     + '</details>'
     + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
-        ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Own vehicle — dedicate a separate vehicle to this trip (not chained with others)</label></div>'
+        ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '')
     + gapPlannerHTML(trip, (hrs)=>rate*hrs, minH);
 }
@@ -1772,7 +1772,7 @@ function standardFleetBodyHTML(trip){
     + '</div>'
     + hourlyTimeRow
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
-        ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Own vehicle — dedicate a separate vehicle to this trip (not chained with others)</label></div>'
+        ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '')
     + '<div class="live-status" data-livestatus="1"></div>'
     + '<details class="drive-override"><summary>Drive times (override)</summary>'
@@ -1967,17 +1967,30 @@ function dayTimelineCheck(){
       fleetLines.push({date, text:date+': '+chains.length+' × '+cname+' needed — '+chainDesc});
     }
     // Within-chain rules: consecutive trips SHARING a vehicle still need legal gaps.
+    // The reuse test is type-agnostic across the standard fleet — airport, P2P, and
+    // hourly in ANY combination: a failing gap means the pair should be quoted as one
+    // continuous hourly booking. (Classic Cars excluded — their tiered non-consecutive
+    // pricing already handles same-day gaps natively. Buses warn within their own class.)
+    const STD_KINDS=['fromairport','toairport','p2p','hourly'];
     chains.forEach(chain=>{
       for(let j=0;j<chain.length-1;j++){
         const A=chain[j], B=chain[j+1];
         const gapH=(B.ss.startMin-(A.ss.startMin+A.ss.spanHrs*60))/60;
-        if(A.t.kind==='p2p' && B.t.kind==='p2p'){
+        const bothStd=STD_KINDS.includes(A.t.kind)&&STD_KINDS.includes(B.t.kind);
+        const bothBus=A.t.kind==='bus'&&B.t.kind==='bus';
+        if(bothStd||bothBus){
           const free=gapH-2*REPO_BUF;
-          if(free<2) findings.push({sev:'warn', text:date+': trips '+(A.i+1)+' & '+(B.i+1)+' share a '+cname+' only '+gapH.toFixed(1)+'h apart — reusable time ≈'+Math.max(0,free).toFixed(1)+'h (< 2h). §5.2: book as continuous hourly, not two P2Ps. Open the P2P card\'s same-day panel for exact numbers.'});
-        } else if((A.t.kind==='hourly'||A.t.kind==='bus') && B.t.kind===A.t.kind){
-          const free=gapH-2*REPO_BUF;
-          if(free<2) findings.push({sev:'warn', text:date+': trips '+(A.i+1)+' & '+(B.i+1)+' — two '+(A.t.kind==='bus'?'bus':'hourly')+' blocks only '+gapH.toFixed(1)+'h apart on one vehicle; book as one continuous block (see the idle-gap planner).'});
-        } else if(gapH<0.5){
+          if(free<2){
+            let what;
+            if(A.t.kind==='p2p'&&B.t.kind==='p2p') what='§5.2: book as continuous hourly, not two P2Ps. Open the P2P card\'s same-day panel for exact numbers.';
+            else if(bothBus) what='book as one continuous block (see the idle-gap planner).';
+            else if(A.t.kind==='hourly'&&B.t.kind==='hourly') what='book as one continuous hourly block (see the idle-gap planner).';
+            else what='the vehicle can\'t be released in between — quote the span as a single continuous hourly booking instead of separate '+TRIP_TYPES[A.t.kind].label+' + '+TRIP_TYPES[B.t.kind].label+' trips.';
+            findings.push({sev:'warn', text:date+': trips '+(A.i+1)+' & '+(B.i+1)+' share a '+cname+' only '+gapH.toFixed(1)+'h apart (reusable time ≈'+Math.max(0,free).toFixed(1)+'h, < 2h) — '+what});
+            continue;
+          }
+        }
+        if(gapH<0.5){
           findings.push({sev:'info', text:date+': only '+(gapH*60).toFixed(0)+' min between trips '+(A.i+1)+' & '+(B.i+1)+' on the same '+cname+' — tight transition; confirm repositioning.'});
         }
       }
