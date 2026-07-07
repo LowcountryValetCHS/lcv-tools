@@ -362,24 +362,35 @@ function gapSplitOptions(cfg){
     return {opts, recommended:'through'};
   }
   // Split: two independent blocks, each billed at AT LEAST the minimum (padding to the min is valid —
-  // the minimum is a floor, not a disqualifier). Split is offered whenever it's cheaper than billing through.
+  // the minimum is a floor, not a disqualifier).
+  // OPERATIONAL VIABILITY (spec §5.2 rule): a split is only real if the vehicle is genuinely
+  // released during the gap — there must be enough free time to productively reuse it.
+  // Require (gap − round-trip dead-head) ≥ 2h, i.e. room to insert at least one minimum paying trip.
+  // Otherwise the vehicle sits committed anyway and the span must bill through.
+  const reuseHrs = gap - 2*(cfg.reuseDeadheadHrs!=null ? +cfg.reuseDeadheadHrs : dh);
+  const gapReusable = reuseHrs >= 2;
   const block1=Math.max(minHrs, seg1+dh);
   const block2=Math.max(minHrs, seg2+dh);
   const splitPrice=priceHours(block1)+priceHours(block2);
   const splitCheaper = splitPrice < contPrice;
-  const padded = (seg1+dh)<minHrs || (seg2+dh)<minHrs; // did either block get floored up to the min?
+  const splitViable = gapReusable && splitCheaper;
+  const padded = (seg1+dh)<minHrs || (seg2+dh)<minHrs;
   opts.push({
     key:'split', label:'Split into two blocks',
-    hours:block1+block2, price:splitPrice, legal:splitCheaper,
+    hours:block1+block2, price:splitPrice, legal:splitViable,
     block1, block2,
-    note: splitCheaper
-      ? ('Two separate hourly blocks ('+block1.toFixed(1)+'h + '+block2.toFixed(1)+'h'
-         +(padded?', each billed at the '+minHrs+'h minimum':'')
-         +'). Vehicle released during the '+gap.toFixed(1)+'h gap — far cheaper than holding it the whole span.')
-      : 'Both blocks billed at the minimum still isn\'t cheaper than billing through — bill through.'
+    note: !gapReusable
+      ? ('Not offered: the '+gap.toFixed(1)+'h gap is too short to actually release and reuse the vehicle'
+         +' (needs gap − round-trip dead-head ≥ 2h; here that leaves '+Math.max(0,reuseHrs).toFixed(1)+'h).'
+         +' The vehicle stays committed either way — bill through.')
+      : (splitCheaper
+          ? ('Two separate hourly blocks ('+block1.toFixed(1)+'h + '+block2.toFixed(1)+'h'
+             +(padded?', each billed at the '+minHrs+'h minimum':'')
+             +'). Vehicle genuinely released during the '+gap.toFixed(1)+'h gap — far cheaper than holding it the whole span.')
+          : 'The gap is long enough to release the vehicle, but splitting isn\'t cheaper than billing through here — bill through.')
   });
-  // Recommend split whenever it's cheaper; otherwise bill through.
-  const rec = splitCheaper ? 'split' : 'through';
+  // Recommend split only when the gap is genuinely reusable AND split is cheaper.
+  const rec = splitViable ? 'split' : 'through';
   opts.forEach(o=>o.recommended=(o.key===rec));
   return {opts, recommended:rec};
 }
@@ -1194,7 +1205,7 @@ function makeTrip(kind){
     busType:'mc4957', busHours:6,
     busSeasonOv:'', busDayOv:'', busTimeOv:'', // optional manual overrides ('' = auto from date/time)
     // gap-split planner (hourly/bus advisory)
-    gapPlannerOn:false, gapSeg1:2, gapGap:4, gapSeg2:2, gapStandby:false,
+    gapPlannerOn:false, gapSeg1:2, gapGap:4, gapSeg2:2, gapStandby:false, gapDeadhead:0,
     // vintage inputs
     vintageType:'convertible', vintageServiceHrs:2, vintageNonconsecHrs:0, vintageDeadheadMin:40,
     // OTR inputs
@@ -1442,10 +1453,16 @@ function gapPlannerHTML(trip, priceHoursFn, minHrs){
     + '<div><label style="margin-top:0;">1st service (h)</label><input type="number" data-f="gapSeg1" value="'+trip.gapSeg1+'" min="0" step="0.5"></div>'
     + '<div><label style="margin-top:0;">Gap (h)</label><input type="number" data-f="gapGap" value="'+trip.gapGap+'" min="0" step="0.5"></div>'
     + '<div><label style="margin-top:0;">2nd service (h)</label><input type="number" data-f="gapSeg2" value="'+trip.gapSeg2+'" min="0" step="0.5"></div>'
-    + '</div>';
+    + '</div>'
+    + '<div class="row3" style="margin-top:8px;">'
+    + '<div><label style="margin-top:0;">Dead-head to reuse, each way (h)</label><input type="number" data-f="gapDeadhead" value="'+(trip.gapDeadhead||0)+'" min="0" step="0.25"></div>'
+    + '<div></div><div></div>'
+    + '</div>'
+    + '<div class="hint" style="margin-top:6px;">A split is only offered when the vehicle can genuinely be reused during the gap: gap − round-trip dead-head must leave ≥ 2h (room for one minimum paying trip). Short gaps bill through — the vehicle stays committed either way.</div>';
   const res=gapSplitOptions({
     seg1Hrs:trip.gapSeg1, gapHrs:trip.gapGap, seg2Hrs:trip.gapSeg2,
-    minHrs:minHrs, isStandby:trip.gapStandby, priceHours:priceHoursFn, deadheadHrs:0
+    minHrs:minHrs, isStandby:trip.gapStandby, priceHours:priceHoursFn, deadheadHrs:0,
+    reuseDeadheadHrs:trip.gapDeadhead||0
   });
   h+='<div class="otr-opts" style="margin-top:10px;">';
   res.opts.forEach(o=>{
@@ -1908,7 +1925,7 @@ $('tripList').addEventListener('input',e=>{
   const f=e.target.dataset.f; if(!f) return;
   const card=e.target.closest('[data-tid]'); if(!card) return;
   const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
-  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle','gapSeg1','gapGap','gapSeg2'];
+  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle','gapSeg1','gapGap','gapSeg2','gapDeadhead'];
   if(e.target.type==='checkbox'){
     trip[f]=e.target.checked;
   } else {
@@ -1941,7 +1958,7 @@ $('tripList').addEventListener('input',e=>{
   const vintageStructural = trip.kind==='vintage' && f==='vintageType';
   const otrStructural = trip.kind==='otr' && (f==='otrDrivers'||f==='otrBus'||f==='otrSeason');
   // Gap planner: keep it open; refresh just the options list (not the inputs) to preserve focus.
-  if(f==='gapSeg1'||f==='gapGap'||f==='gapSeg2'||f==='gapStandby'){
+  if(f==='gapSeg1'||f==='gapGap'||f==='gapSeg2'||f==='gapStandby'||f==='gapDeadhead'){
     trip.gapPlannerOn=true;
     if(f==='gapStandby'){
       // checkbox — safe to rebuild the whole panel (shows/hides the split option)
@@ -1966,7 +1983,7 @@ $('tripList').addEventListener('input',e=>{
       } else {
         priceHoursFn=(hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)); minH=2;
       }
-      const res=gapSplitOptions({seg1Hrs:trip.gapSeg1,gapHrs:trip.gapGap,seg2Hrs:trip.gapSeg2,minHrs:minH,isStandby:trip.gapStandby,priceHours:priceHoursFn,deadheadHrs:0});
+      const res=gapSplitOptions({seg1Hrs:trip.gapSeg1,gapHrs:trip.gapGap,seg2Hrs:trip.gapSeg2,minHrs:minH,isStandby:trip.gapStandby,priceHours:priceHoursFn,deadheadHrs:0,reuseDeadheadHrs:trip.gapDeadhead||0});
       planner.innerHTML=res.opts.map(function(o){
         return '<div class="otr-opt'+(o.legal?'':' illegal')+(o.recommended?' rec':'')+'">'
         +'<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(o.recommended?' <span class="rec-badge">recommended</span>':'')+'</div>'
