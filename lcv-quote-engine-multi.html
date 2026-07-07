@@ -265,6 +265,70 @@ const OTR_VEHICLE_DAY={ peak:1000, standard:900, slow:800, dead:700 }; // by sea
 // ============================================================================
 const FMCSA_MAX_DRIVE=10, FMCSA_MAX_ONDUTY=15, FMCSA_REST=8;
 
+// OTR origin — the Hollywood, SC yard. FMCSA duty time is measured from here, so the
+// yard→pickup positioning leg is DUTY TIME, not just fuel. (Coords are Hollywood SC
+// center — refine to the exact yard address if pickups ever start elsewhere.)
+const OTR_YARD={ name:'Hollywood yard', lat:32.7346, lng:-80.2415 };
+
+// Single-call Routes fetch for an OTR leg: duration (PESSIMISTIC — conservative is the
+// right bias for legal-feasibility planning) + distance for the fuel calc.
+async function fetchOtrLeg(from,to,departISO){
+  const body={origin:{location:{latLng:{latitude:from.lat,longitude:from.lng}}},
+    destination:{location:{latLng:{latitude:to.lat,longitude:to.lng}}},
+    travelMode:"DRIVE", routingPreference:"TRAFFIC_AWARE_OPTIMAL", trafficModel:"PESSIMISTIC",
+    ...(departISO?{departureTime:departISO}:{})};
+  const res=await fetch("https://routes.googleapis.com/directions/v2:computeRoutes",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","X-Goog-Api-Key":MAPS_KEY,"X-Goog-FieldMask":"routes.duration,routes.distanceMeters"},
+    body:JSON.stringify(body)});
+  if(!res.ok){ let m=''; try{const e=await res.json(); m=e.error&&e.error.message?(' — '+e.error.message):'';}catch(_){} throw new Error("Routes API "+res.status+m); }
+  const data=await res.json();
+  const r=data.routes&&data.routes[0];
+  if(!r||!r.duration) throw new Error("no route");
+  return { hrs: parseInt(r.duration)/3600, miles: (r.distanceMeters||0)/1609.344 };
+}
+
+// Fetch both OTR legs from the entered addresses, auto-fill miles, and seed the planner
+// timeline with real drive hours — Hollywood positioning counted as duty time.
+async function fetchOtrLegs(trip, statusEl){
+  try{
+    const pu=(trip.otrPickupAddr||'').trim(), de=(trip.otrDestAddr||'').trim();
+    if(!pu||!de) throw new Error("enter both the pickup and destination addresses first");
+    if(!mapsReady()) throw new Error("add your Maps API key to the file");
+    if(statusEl) statusEl.textContent='Resolving addresses…';
+    const [puGeo,deGeo]=await Promise.all([
+      geocodeLoc({addr:pu, exactEntry:true}),
+      geocodeLoc({addr:de, exactEntry:true})
+    ]);
+    if(statusEl) statusEl.textContent='Fetching leg drive times…';
+    const departISO = trip.date ? new Date(trip.date+'T08:00:00').toISOString() : null;
+    const [leg1,leg2]=await Promise.all([
+      fetchOtrLeg(OTR_YARD, puGeo, departISO),
+      fetchOtrLeg(puGeo, deGeo, departISO)
+    ]);
+    const r1=x=>Math.round(x*10)/10;
+    trip._otrLegs={ posHrs:r1(leg1.hrs), haulHrs:r1(leg2.hrs), miles:Math.round(2*(leg1.miles+leg2.miles)) };
+    trip.otrMiles=trip._otrLegs.miles; // round trip, both legs
+    // Seed the timeline: travel-out day (positioning + haul = one duty day attempt),
+    // middle service days (placeholders the agent edits), travel-back day.
+    const travelDrive=r1(leg1.hrs+leg2.hrs);
+    const travelDuty=r1(travelDrive+2); // +2h pre-trip / load / fuel buffer — agent-editable
+    const days=Math.max(2, +trip.otrDays||2);
+    const tl=[{label:'Day 1 (position + haul out)', driveHrs:travelDrive, onDutyHrs:travelDuty}];
+    for(let i=2;i<days;i++) tl.push({label:'Day '+i+' (on-site service)', driveHrs:2, onDutyHrs:6});
+    tl.push({label:'Day '+days+' (return)', driveHrs:travelDrive, onDutyHrs:travelDuty});
+    trip.otrTimeline=tl;
+    trip.otrPlannerOn=true;
+    if(statusEl) statusEl.innerHTML='<span style="color:#2f7d50">✓ positioning '+trip._otrLegs.posHrs+'h · haul '+trip._otrLegs.haulHrs+'h · '+trip._otrLegs.miles+' mi round trip — timeline seeded (edit the days to match the schedule)</span>';
+    computeTrip(trip);
+    renderTrips(); renderSummary();
+  }catch(err){
+    console.error('OTR legs fetch failed:', err.message);
+    if(statusEl) statusEl.innerHTML='<span style="color:#a8442a">Fetch failed ('+err.message+').</span>';
+  }
+}
+
+
 // Pure cost-up pricer for a planner option (mirrors the OTR trip pricing).
 function otrPriceOption(opt, miles, season, tolls){
   const driver=OTR_DRIVER_DAY*opt.days*opt.drivers;
@@ -393,6 +457,45 @@ function gapSplitOptions(cfg){
   const rec = splitViable ? 'split' : 'through';
   opts.forEach(o=>o.recommended=(o.key===rec));
   return {opts, recommended:rec};
+}
+
+// ============================================================================
+// P2P SAME-DAY-COMBINE PLANNER (advisory) — spec §5.2.
+// Two P2P trips for the same client on the same day with a gap: a short gap means the
+// vehicle can't be productively reused, so the pair MUST book as continuous hourly rather
+// than two separate cheap P2Ps. Rule (precise): REQUIRE hourly if (gap − round-trip
+// dead-head to reuse) < 2h — not enough room to insert one minimum paying trip.
+// Note the asymmetry vs the gap-split planner: there, split is an OPTION when viable;
+// here, combining is a REQUIREMENT when the gap is too tight — it protects revenue.
+function p2pCombineOptions(cfg){
+  // cfg = { trip1Hrs, gapHrs, trip2Hrs, deadheadHrs (each way), minHrs, priceHours(hrs) }
+  const t1=Math.max(0,+cfg.trip1Hrs||0), gap=Math.max(0,+cfg.gapHrs||0), t2=Math.max(0,+cfg.trip2Hrs||0);
+  const dh=Math.max(0,+cfg.deadheadHrs||0);
+  const minHrs=cfg.minHrs||2;
+  const priceHours=cfg.priceHours;
+  const freeTime = gap - 2*dh;
+  const combineRequired = freeTime < 2;
+  // Option A: keep as two P2P trips (each floored at the P2P minimum)
+  const p1=priceHours(Math.max(minHrs,t1)), p2=priceHours(Math.max(minHrs,t2));
+  const pairPrice=p1+p2;
+  // Option B: continuous hourly across the whole window
+  const contHours=Math.max(minHrs, t1+gap+t2);
+  const contPrice=priceHours(contHours);
+  const opts=[
+    { key:'pair', label:'Two separate P2P trips',
+      hours:Math.max(minHrs,t1)+Math.max(minHrs,t2), price:pairPrice, legal:!combineRequired,
+      note: combineRequired
+        ? ('Not allowed: the '+gap.toFixed(1)+'h gap leaves only '+Math.max(0,freeTime).toFixed(1)+'h of reusable time after dead-head (< 2h) — the vehicle can\'t be productively reused, so two cheap P2Ps would underprice holding it. Book continuous hourly.')
+        : ('Gap leaves '+freeTime.toFixed(1)+'h of reusable time (≥ 2h) — the vehicle is genuinely free between trips. Two P2Ps are fine.') },
+    { key:'hourly', label:'Combine into continuous hourly',
+      hours:contHours, price:contPrice, legal:true,
+      note: combineRequired
+        ? 'Required here — the gap is too tight for the vehicle to be released. One continuous hourly booking across the whole window.'
+        : 'Always available as an alternative; some clients prefer keeping the vehicle on hand.' }
+  ];
+  const rec = combineRequired ? 'hourly' : 'pair';
+  opts.forEach(o=>o.recommended=(o.key===rec));
+  return {opts, recommended:rec, combineRequired, freeTime};
 }
 
 // ============================================================================
@@ -1206,6 +1309,8 @@ function makeTrip(kind){
     busSeasonOv:'', busDayOv:'', busTimeOv:'', // optional manual overrides ('' = auto from date/time)
     // gap-split planner (hourly/bus advisory)
     gapPlannerOn:false, gapSeg1:2, gapGap:4, gapSeg2:2, gapStandby:false, gapDeadhead:0,
+    // P2P same-day-combine planner (§5.2 advisory)
+    p2pPlannerOn:false, p2pT1:1, p2pGap:3, p2pT2:1, p2pDeadhead:0.33,
     // vintage inputs
     vintageType:'convertible', vintageServiceHrs:2, vintageNonconsecHrs:0, vintageDeadheadMin:40,
     // OTR inputs
@@ -1391,7 +1496,11 @@ function otrBodyHTML(trip){
     +     '<div><label style="margin-top:0;">Primary pickup address</label><input type="text" data-f="otrPickupAddr" value="'+(trip.otrPickupAddr||'').replace(/"/g,'&quot;')+'" placeholder="e.g. Francis Marion University, Florence SC"></div>'
     +     '<div><label style="margin-top:0;">Far destination address</label><input type="text" data-f="otrDestAddr" value="'+(trip.otrDestAddr||'').replace(/"/g,'&quot;')+'" placeholder="e.g. University of ___, City ST"></div>'
     +   '</div>'
-    +   '<div class="hint" style="margin-top:6px;">Origin is always the Hollywood yard (added automatically as the positioning leg). Live drive-time auto-fill for the planner\'s duty hours — including the Hollywood positioning as duty time — is the next increment; for now enter the leg hours in the planner below.</div>'
+    +   '<div class="row2" style="margin-top:8px;">'
+    +     '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-otrfetch="1" type="button">◎ Fetch leg drive times</button></div>'
+    +     '<div class="live-status" data-otrfetchstatus="1" style="align-self:end;">'+(trip._otrLegs?('positioning '+trip._otrLegs.posHrs+'h · haul '+trip._otrLegs.haulHrs+'h · '+trip._otrLegs.miles+' mi RT'):'')+'</div>'
+    +   '</div>'
+    +   '<div class="hint" style="margin-top:6px;">Origin is always the Hollywood yard (added automatically as the positioning leg — it counts as DUTY time, not just fuel). Fetching geocodes both addresses, fills round-trip miles, and seeds the feasibility timeline below with real drive hours (conservative/pessimistic traffic). Edit the seeded days to match the actual schedule.</div>'
     + '</div>'
     + (drivers>1 ? '<div class="row2" style="margin-top:10px;"><div><label style="margin-top:0;">Relief-driver positioning shuttle $</label><input type="number" data-f="otrReliefShuttle" value="'+trip.otrReliefShuttle+'" min="0"></div><div></div></div>' : '')
     + '<div class="bus-rate">Est. cost-up base: <strong>$'+est.toFixed(2)+'</strong> <span class="bus-factors">(driver + fuel $'+fuel.toFixed(0)+' + lodging + per diem + vehicle day rate'+(drivers>1?' × '+drivers+' drivers':'')+')</span> — before 20% gratuity + 4% card</div>'
@@ -1469,6 +1578,34 @@ function gapPlannerHTML(trip, priceHoursFn, minHrs){
     h+='<div class="otr-opt'+(o.legal?'':' illegal')+(o.recommended?' rec':'')+'">'
       + '<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(o.recommended?' <span class="rec-badge">recommended</span>':'')+'</div>'
       + '<div class="otr-opt-price">'+M(o.price)+' <span class="otr-ach">'+o.hours.toFixed(1)+'h committed base</span></div>'
+      + '<div class="otr-opt-note">'+o.note+'</div>'
+      + '</div>';
+  });
+  h+='</div></div></details>';
+  return h;
+}
+
+// P2P same-day-combine advisory panel (spec §5.2). priceHoursFn maps hours → base $.
+function p2pPlannerHTML(trip, priceHoursFn, minHrs){
+  const on=trip.p2pPlannerOn;
+  let h='<details class="drive-override"'+(on?' open':'')+' data-p2pplanner="1"><summary>◎ Same-day second trip (P2P pair vs. combine to hourly)</summary>';
+  h+='<div style="margin-top:10px;">';
+  h+='<div class="hint" style="margin-top:0;">Client wants a second P2P trip the same day? A short gap means the vehicle can\'t be productively reused, so the pair must book as continuous hourly instead of two cheap P2Ps (§5.2). Rule: require hourly when gap − round-trip dead-head &lt; 2h.</div>';
+  h+='<div class="row3" style="margin-top:8px;">'
+    + '<div><label style="margin-top:0;">This trip (h)</label><input type="number" data-f="p2pT1" value="'+trip.p2pT1+'" min="0" step="0.25"></div>'
+    + '<div><label style="margin-top:0;">Gap to next pickup (h)</label><input type="number" data-f="p2pGap" value="'+trip.p2pGap+'" min="0" step="0.5"></div>'
+    + '<div><label style="margin-top:0;">Second trip (h)</label><input type="number" data-f="p2pT2" value="'+trip.p2pT2+'" min="0" step="0.25"></div>'
+    + '</div>'
+    + '<div class="row3" style="margin-top:8px;">'
+    + '<div><label style="margin-top:0;">Dead-head to reuse, each way (h)</label><input type="number" data-f="p2pDeadhead" value="'+(trip.p2pDeadhead||0)+'" min="0" step="0.25"></div>'
+    + '<div></div><div></div>'
+    + '</div>';
+  const res=p2pCombineOptions({trip1Hrs:trip.p2pT1, gapHrs:trip.p2pGap, trip2Hrs:trip.p2pT2, deadheadHrs:trip.p2pDeadhead||0, minHrs:minHrs, priceHours:priceHoursFn});
+  h+='<div class="otr-opts" style="margin-top:10px;">';
+  res.opts.forEach(function(o){
+    h+='<div class="otr-opt'+(o.legal?'':' illegal')+(o.recommended?' rec':'')+'">'
+      + '<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(o.recommended?' <span class="rec-badge">recommended</span>':'')+'</div>'
+      + '<div class="otr-opt-price">'+M(o.price)+' <span class="otr-ach">'+o.hours.toFixed(1)+'h billed base</span></div>'
       + '<div class="otr-opt-note">'+o.note+'</div>'
       + '</div>';
   });
@@ -1630,7 +1767,8 @@ function standardFleetBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Trip discount %</label><input type="number" data-f="discountPct" value="'+trip.discountPct+'" min="0" step="0.5"></div>'
     + '</div>'
     + '<div class="hint">'+billNote+' Click <strong>Live drive times</strong> to fill std/busy from Google (geocoded to the exact venue); the model prices on their median. Override manually if needed.</div>'
-    + (k==='hourly' ? gapPlannerHTML(trip, (hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)), 2) : '');
+    + (k==='hourly' ? gapPlannerHTML(trip, (hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)), 2) : '')
+    + (k==='p2p' ? p2pPlannerHTML(trip, (hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)), 2) : '');
 }
 
 // Build the detailed per-trip breakdown (planner-style line items) from computeTrip's captured data.
@@ -1811,6 +1949,16 @@ $('tripList').addEventListener('click',e=>{
     live.disabled=true;
     refreshTripTimes(trip,statusEl).finally(()=>{ live.disabled=false; });
   }
+  // OTR: fetch leg drive times from the entered addresses
+  const otrFetch=e.target.closest('[data-otrfetch]');
+  if(otrFetch){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const statusEl=card.querySelector('[data-otrfetchstatus]');
+    otrFetch.disabled=true;
+    fetchOtrLegs(trip,statusEl).finally(()=>{ otrFetch.disabled=false; });
+    return;
+  }
   // OTR planner: add / remove a timeline day
   const addDay=e.target.closest('[data-otraddday]');
   const delDay=e.target.closest('[data-otrdelday]');
@@ -1925,7 +2073,7 @@ $('tripList').addEventListener('input',e=>{
   const f=e.target.dataset.f; if(!f) return;
   const card=e.target.closest('[data-tid]'); if(!card) return;
   const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
-  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle','gapSeg1','gapGap','gapSeg2','gapDeadhead'];
+  const numeric=['hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle','gapSeg1','gapGap','gapSeg2','gapDeadhead','p2pT1','p2pGap','p2pT2','p2pDeadhead'];
   if(e.target.type==='checkbox'){
     trip[f]=e.target.checked;
   } else {
@@ -1988,6 +2136,22 @@ $('tripList').addEventListener('input',e=>{
         return '<div class="otr-opt'+(o.legal?'':' illegal')+(o.recommended?' rec':'')+'">'
         +'<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(o.recommended?' <span class="rec-badge">recommended</span>':'')+'</div>'
         +'<div class="otr-opt-price">'+M(o.price)+' <span class="otr-ach">'+o.hours.toFixed(1)+'h committed base</span></div>'
+        +'<div class="otr-opt-note">'+o.note+'</div></div>';
+      }).join('');
+    }
+    return;
+  }
+  // P2P combine planner: refresh just its options list (preserve input focus).
+  if(f==='p2pT1'||f==='p2pGap'||f==='p2pT2'||f==='p2pDeadhead'){
+    trip.p2pPlannerOn=true;
+    const panel=card.querySelector('[data-p2pplanner] .otr-opts');
+    if(panel){
+      const ph=(hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs));
+      const res=p2pCombineOptions({trip1Hrs:trip.p2pT1,gapHrs:trip.p2pGap,trip2Hrs:trip.p2pT2,deadheadHrs:trip.p2pDeadhead||0,minHrs:2,priceHours:ph});
+      panel.innerHTML=res.opts.map(function(o){
+        return '<div class="otr-opt'+(o.legal?'':' illegal')+(o.recommended?' rec':'')+'">'
+        +'<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(o.recommended?' <span class="rec-badge">recommended</span>':'')+'</div>'
+        +'<div class="otr-opt-price">'+M(o.price)+' <span class="otr-ach">'+o.hours.toFixed(1)+'h billed base</span></div>'
         +'<div class="otr-opt-note">'+o.note+'</div></div>';
       }).join('');
     }
