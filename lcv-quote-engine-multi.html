@@ -361,25 +361,25 @@ function gapSplitOptions(cfg){
     opts[0].note='Wait/Standby — always bills through, never splits. Vehicle stays committed across the gap.';
     return {opts, recommended:'through'};
   }
-  // Split: two independent blocks, each floored at min, each carrying its own dead-head (round trip).
+  // Split: two independent blocks, each billed at AT LEAST the minimum (padding to the min is valid —
+  // the minimum is a floor, not a disqualifier). Split is offered whenever it's cheaper than billing through.
   const block1=Math.max(minHrs, seg1+dh);
   const block2=Math.max(minHrs, seg2+dh);
-  const bothMeetMin = (seg1+dh)>=minHrs && (seg2+dh)>=minHrs; // do the raw blocks clear the min without padding?
   const splitPrice=priceHours(block1)+priceHours(block2);
-  const splitViable = bothMeetMin; // rule (a): each block independently meets its minimum
-  const splitCheaper = splitPrice < contPrice; // rule (b)
+  const splitCheaper = splitPrice < contPrice;
+  const padded = (seg1+dh)<minHrs || (seg2+dh)<minHrs; // did either block get floored up to the min?
   opts.push({
     key:'split', label:'Split into two blocks',
-    hours:block1+block2, price:splitPrice, legal:splitViable,
+    hours:block1+block2, price:splitPrice, legal:splitCheaper,
     block1, block2,
-    note: !splitViable
-      ? 'Not offered: a block falls under the '+minHrs+'h minimum ('+(seg1+dh).toFixed(1)+'h / '+(seg2+dh).toFixed(1)+'h) — splitting would just pad back to the minimum.'
-      : (splitCheaper
-          ? 'Two separate hourly blocks ('+block1.toFixed(1)+'h + '+block2.toFixed(1)+'h). Vehicle released during the gap. Cheaper here.'
-          : 'Both blocks meet the minimum, but splitting is not cheaper than billing through — bill through.')
+    note: splitCheaper
+      ? ('Two separate hourly blocks ('+block1.toFixed(1)+'h + '+block2.toFixed(1)+'h'
+         +(padded?', each billed at the '+minHrs+'h minimum':'')
+         +'). Vehicle released during the '+gap.toFixed(1)+'h gap — far cheaper than holding it the whole span.')
+      : 'Both blocks billed at the minimum still isn\'t cheaper than billing through — bill through.'
   });
-  // Recommend: split only if viable AND cheaper; otherwise bill through.
-  const rec = (splitViable && splitCheaper) ? 'split' : 'through';
+  // Recommend split whenever it's cheaper; otherwise bill through.
+  const rec = splitCheaper ? 'split' : 'through';
   opts.forEach(o=>o.recommended=(o.key===rec));
   return {opts, recommended:rec};
 }
