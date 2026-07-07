@@ -101,6 +101,14 @@
   .ac-secondary{font-size:11px;color:var(--ink-soft);margin-top:1px;}
   .otr-legs{margin-top:12px;padding:11px;background:#fbfaf6;border:1px solid var(--line);border-radius:5px;}
   .otr-legs-hd{font-size:11.5px;font-weight:700;color:var(--marsh);margin-bottom:8px;}
+  .tlc{margin-top:12px;padding-top:10px;border-top:1px dashed var(--line);}
+  .tlc-hd{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;}
+  .tlc-item{font-size:12px;line-height:1.45;padding:7px 10px;border-radius:4px;margin-bottom:6px;}
+  .tlc-item.conflict{background:#fbe7e2;color:#a8442a;border:1px solid #d9a08e;}
+  .tlc-item.warn{background:#f9f2df;color:#8a6d39;border:1px solid #d9c79a;}
+  .tlc-item.info{background:#f2f2ee;color:#5a615c;border:1px solid #d8d8d0;}
+  .tlc-item.ok{background:#e7f2ea;color:#2f7d50;border:1px solid #99c7ab;}
+  .tlc-item.fleet{background:#eef1f6;color:#3d4d63;border:1px solid #b9c4d4;font-weight:600;}
   .otr-analysis{margin-top:12px;}
   .otr-verdict{font-size:12.5px;font-weight:700;padding:8px 11px;border-radius:4px;margin-bottom:8px;}
   .otr-verdict.ok{background:#e7f2ea;color:#2f7d50;border:1px solid #99c7ab;}
@@ -1309,6 +1317,7 @@ function makeTrip(kind){
     busSeasonOv:'', busDayOv:'', busTimeOv:'', // optional manual overrides ('' = auto from date/time)
     // gap-split planner (hourly/bus advisory)
     gapPlannerOn:false, gapSeg1:2, gapGap:4, gapSeg2:2, gapStandby:false, gapDeadhead:0,
+    diffVehicle:false,  // own vehicle — exclude from quote-level same-day timeline checks
     // P2P same-day-combine planner (§5.2 advisory)
     p2pPlannerOn:false, p2pT1:1, p2pGap:3, p2pT2:1, p2pDeadhead:0.33,
     // vintage inputs
@@ -1663,6 +1672,9 @@ function busBodyHTML(trip){
     +   '</div>'
     + '</details>'
     + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
+    + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
+        ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Own vehicle — dedicate a separate vehicle to this trip (not chained with others)</label></div>'
+        : '')
     + gapPlannerHTML(trip, (hrs)=>rate*hrs, minH);
 }
 
@@ -1741,6 +1753,9 @@ function standardFleetBodyHTML(trip){
   const hoursField = (k==='hourly')
     ? '<div><label style="margin-top:0;">Booked hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
     : '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>';
+  const hourlyTimeRow = (k==='hourly')
+    ? '<div class="row2" style="margin-top:10px;"><div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div><div></div></div>'
+    : '';
   const billNote = k==='hourly'?'Hourly bills booked hours + round-trip dead-head.':(airport?'Airport bills service drive out + waived dead-head back.':'P2P bills the drive + round-trip waived dead-head.');
   return ''
     + '<div class="row2">'
@@ -1755,6 +1770,10 @@ function standardFleetBodyHTML(trip){
     +   hoursField
     +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
     + '</div>'
+    + hourlyTimeRow
+    + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
+        ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Own vehicle — dedicate a separate vehicle to this trip (not chained with others)</label></div>'
+        : '')
     + '<div class="live-status" data-livestatus="1"></div>'
     + '<details class="drive-override"><summary>Drive times (override)</summary>'
     +   '<div class="row2" style="margin-top:8px;">'
@@ -1864,6 +1883,109 @@ function computeWrapper(){
 }
 
 // ---- Render the quote summary with the real grand total ----
+// ============================================================================
+// QUOTE-LEVEL DAY-TIMELINE CHECK — cross-trip reasoning on data already on the cards.
+// Groups client-facing trips by service date, sorts by start time, estimates each
+// vehicle-occupied span, and flags: overlaps (impossible with one vehicle), §5.2
+// same-day P2P pairs whose gap is too tight (must combine to hourly), and hourly/bus
+// blocks too close to release the vehicle between them. Advisory — vehicle CLASS is
+// known but vehicle IDENTITY is not, so "own vehicle" on a card excludes it.
+function tripStartSpan(t){
+  if(!t.date||!t.time) return null;
+  const parts=(t.time||'').split(':').map(Number);
+  if(isNaN(parts[0])) return null;
+  const startMin=parts[0]*60+(parts[1]||0);
+  const k=t.kind; let span;
+  if(k==='hourly') span=+t.hours||0;
+  else if(k==='bus') span=+t.busHours||0;
+  else if(k==='greeter') span=Math.max(GREETER_MIN_HRS, GREETER_SETUP_HRS+(+t.hours||0));
+  else if(k==='vintage') span=+t.vintageServiceHrs||0;
+  else if(k==='fromairport'||k==='toairport'||k==='p2p'){
+    const med=((+t.driveStd||0)+(+t.driveBusy||0))/2; span=Math.max(0.5, med/60);
+  } else return null; // otr & internal trips are out of scope here
+  if(span<=0) return null;
+  return {startMin, spanHrs:span};
+}
+function dayTimelineCheck(){
+  // ==========================================================================
+  // FLEET ASSIGNMENT + WITHIN-CHAIN CHECKS.
+  // Per service date + vehicle class: greedy interval-partition (provably minimal)
+  // assigns trips to vehicle chains, with a ~20-min repositioning buffer between
+  // chained trips. Output: how many of each vehicle are needed and which trips
+  // ride on which. The §5.2 / merge rules then run WITHIN each chain (trips
+  // sharing a vehicle still need legal gaps). "Own vehicle" = a dedicated chain.
+  // Advisory: counts are demand, not availability — the engine doesn't know the fleet.
+  // ==========================================================================
+  const REPO_BUF=0.33; // ~20-min repositioning between chained trips
+  const findings=[]; const fleetLines=[]; let pairsChecked=0; let multiVehicle=false;
+  function classKey(t){
+    if(t.kind==='bus') return 'bus:'+t.busType;
+    if(t.kind==='vintage') return 'vint:'+t.vintageType;
+    if(t.kind==='greeter') return null; // staff, not fleet
+    return 'std:'+t.vehicle;
+  }
+  function classNameOf(t){
+    if(t.kind==='bus') return (BUSES[t.busType]||{}).name||'Bus';
+    if(t.kind==='vintage') return (VINTAGE[t.vintageType]||{}).name||'Classic Car';
+    return (STD[t.vehicle]||{}).name||'Vehicle';
+  }
+  const sched=TRIPS.map((t,i)=>({t,i}))
+    .filter(x=>TRIP_TYPES[x.t.kind].clientFacing && classKey(x.t))
+    .map(x=>({t:x.t,i:x.i,ss:tripStartSpan(x.t),ck:classKey(x.t)}))
+    .filter(x=>x.ss);
+  const groups={};
+  sched.forEach(x=>{ const k=x.t.date+'§'+x.ck; (groups[k]=groups[k]||[]).push(x); });
+  for(const k in groups){
+    const g=groups[k]; if(g.length<2) continue;
+    const date=g[0].t.date, cname=classNameOf(g[0].t);
+    g.sort((a,b)=>a.ss.startMin-b.ss.startMin);
+    // Greedy partition: chains = arrays of trips; chainEnd = last end-min per chain.
+    const chains=[], chainEnd=[];
+    g.forEach(x=>{
+      pairsChecked++;
+      if(x.t.diffVehicle){ chains.push([x]); chainEnd.push(Infinity); return; } // dedicated — never chained onto
+      let placed=false;
+      for(let c=0;c<chains.length;c++){
+        if(chainEnd[c]===Infinity) continue;
+        if(x.ss.startMin >= chainEnd[c] + REPO_BUF*60){
+          chains[c].push(x); chainEnd[c]=x.ss.startMin+x.ss.spanHrs*60; placed=true; break;
+        }
+      }
+      if(!placed){
+        chains.push([x]); chainEnd.push(x.ss.startMin+x.ss.spanHrs*60);
+        if(chains.length>1){
+          // This trip couldn't share any existing vehicle — say so, with the alternative.
+          const alt=(x.t.kind==='p2p') ? 'combine the overlapping P2Ps into one continuous hourly on a single vehicle, or restagger the times'
+                                       : 'restagger the times to fit fewer vehicles';
+          findings.push({sev:'info', text:date+': trip '+(x.i+1)+' ('+TRIP_TYPES[x.t.kind].label+', '+x.t.time+') can\'t share a '+cname+' with the earlier trips — assigned vehicle #'+chains.length+'. Alternative: '+alt+'.'});
+        }
+      }
+    });
+    if(chains.length>1){
+      multiVehicle=true;
+      const chainDesc=chains.map((c,ci)=>cname.split(' ').pop()+' '+(ci+1)+': trip'+(c.length>1?'s':'')+' '+c.map(x=>x.i+1).join(', ')).join(' · ');
+      fleetLines.push({date, text:date+': '+chains.length+' × '+cname+' needed — '+chainDesc});
+    }
+    // Within-chain rules: consecutive trips SHARING a vehicle still need legal gaps.
+    chains.forEach(chain=>{
+      for(let j=0;j<chain.length-1;j++){
+        const A=chain[j], B=chain[j+1];
+        const gapH=(B.ss.startMin-(A.ss.startMin+A.ss.spanHrs*60))/60;
+        if(A.t.kind==='p2p' && B.t.kind==='p2p'){
+          const free=gapH-2*REPO_BUF;
+          if(free<2) findings.push({sev:'warn', text:date+': trips '+(A.i+1)+' & '+(B.i+1)+' share a '+cname+' only '+gapH.toFixed(1)+'h apart — reusable time ≈'+Math.max(0,free).toFixed(1)+'h (< 2h). §5.2: book as continuous hourly, not two P2Ps. Open the P2P card\'s same-day panel for exact numbers.'});
+        } else if((A.t.kind==='hourly'||A.t.kind==='bus') && B.t.kind===A.t.kind){
+          const free=gapH-2*REPO_BUF;
+          if(free<2) findings.push({sev:'warn', text:date+': trips '+(A.i+1)+' & '+(B.i+1)+' — two '+(A.t.kind==='bus'?'bus':'hourly')+' blocks only '+gapH.toFixed(1)+'h apart on one vehicle; book as one continuous block (see the idle-gap planner).'});
+        } else if(gapH<0.5){
+          findings.push({sev:'info', text:date+': only '+(gapH*60).toFixed(0)+' min between trips '+(A.i+1)+' & '+(B.i+1)+' on the same '+cname+' — tight transition; confirm repositioning.'});
+        }
+      }
+    });
+  }
+  return {findings, fleetLines, pairsChecked, multiVehicle};
+}
+
 function renderSummary(){
   const body=$('summaryBody');
   if(TRIPS.length===0){
@@ -1888,6 +2010,16 @@ function renderSummary(){
     html+=`<div class="line sub"><span class="lbl">Processing fee</span><span class="val">none (${w.payment.toUpperCase()})</span></div>`;
   }
   html+=`<div class="line total"><span class="lbl">Grand total</span><span class="val">${M(w.grand)}</span></div>`;
+  // Day-timeline / fleet check — cross-trip reasoning on shared dates
+  const tlc=dayTimelineCheck();
+  if(tlc.fleetLines.length || tlc.findings.length){
+    html+='<div class="tlc"><div class="tlc-hd">Fleet & day-timeline check</div>';
+    tlc.fleetLines.forEach(f=>{ html+='<div class="tlc-item fleet">🚐 '+f.text+'</div>'; });
+    tlc.findings.forEach(f=>{ html+='<div class="tlc-item '+f.sev+'">'+(f.sev==='conflict'?'✗ ':f.sev==='warn'?'⚠ ':'• ')+f.text+'</div>'; });
+    html+='</div>';
+  } else if(tlc.pairsChecked>0){
+    html+='<div class="tlc"><div class="tlc-item ok">✓ Same-day timeline clear — each vehicle class fits one vehicle, no gap-rule issues.</div></div>';
+  }
   html+=`<div class="empty-note" style="margin-top:12px;">${TRIPS.length} trip(s): ${w.cfTrips.length} client-facing, ${intl} internal${intl?' (not billed)':''}. Each client-facing trip → its own LA reservation.</div>`;
   body.innerHTML=html;
 }
