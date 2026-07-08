@@ -1909,14 +1909,39 @@ function tripStartSpan(t){
 function dayTimelineCheck(){
   // ==========================================================================
   // FLEET ASSIGNMENT + WITHIN-CHAIN CHECKS.
-  // Per service date + vehicle class: greedy interval-partition (provably minimal)
-  // assigns trips to vehicle chains, with a ~20-min repositioning buffer between
-  // chained trips. Output: how many of each vehicle are needed and which trips
-  // ride on which. The §5.2 / merge rules then run WITHIN each chain (trips
-  // sharing a vehicle still need legal gaps). "Own vehicle" = a dedicated chain.
-  // Advisory: counts are demand, not availability — the engine doesn't know the fleet.
+  // Per service date + vehicle class: greedy interval-partition assigns trips to
+  // vehicle chains. Between chained trips the engine requires a full TURNAROUND:
+  //   repositioning drive (coordinate-based estimate; 20-min fallback)
+  //   + vehicle prep (5 min same-client touch-up — a quote is one client;
+  //     the longer new-client reset applies to future cross-quote checks)
+  //   + 15-min early-arrival staging before the next pickup.
+  // The §5.2 / merge rules then run WITHIN each chain. "Dedicated vehicle" = own chain.
+  // Advisory: counts are demand, not availability.
   // ==========================================================================
-  const REPO_BUF=0.33; // ~20-min repositioning between chained trips
+  const TURN={ earlyArriveMin:15, prepSameClientMin:5, prepNewClientMin:15, greetMin:10, avgSpeedMph:30, defaultRepoMin:20 };
+  function havMiles(a,b){
+    const R=3958.8, toR=x=>x*Math.PI/180;
+    const dLat=toR(b.lat-a.lat), dLng=toR(b.lng-a.lng);
+    const h=Math.sin(dLat/2)**2 + Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLng/2)**2;
+    return 2*R*Math.asin(Math.sqrt(h));
+  }
+  function locCoords(key, geo, addr){
+    if(geo && geo.lat!=null) return geo;
+    const L=resolveLoc(key, addr);
+    return (L && L.lat!=null) ? {lat:L.lat,lng:L.lng} : null;
+  }
+  function tripStartCoords(t){ return locCoords(t.fromKey, t._fromGeo, t.fromAddr); }
+  function tripEndCoords(t){
+    if(t.kind==='hourly') return locCoords(t.fromKey, t._fromGeo, t.fromAddr); // roams; primary area ≈ end
+    return locCoords(t.toKey, t._toGeo, t.toAddr);
+  }
+  function repoMinutes(A,B){
+    const from=tripEndCoords(A.t), to=tripStartCoords(B.t);
+    if(!from||!to) return TURN.defaultRepoMin;
+    return Math.max(5, Math.round(havMiles(from,to)/TURN.avgSpeedMph*60));
+  }
+  function turnaroundMin(A,B){ return repoMinutes(A,B) + TURN.prepSameClientMin + TURN.earlyArriveMin + (B.t.meetGreet?TURN.greetMin:0); } // inside greet: park + walk in before the pickup
+  const REPO_BUF=0.33; // reuse-rule repositioning assumption (§5.2 test) — unchanged spec rule
   const findings=[]; const fleetLines=[]; let pairsChecked=0; let multiVehicle=false;
   function classKey(t){
     if(t.kind==='bus') return 'bus:'+t.busType;
@@ -1947,7 +1972,8 @@ function dayTimelineCheck(){
       let placed=false;
       for(let c=0;c<chains.length;c++){
         if(chainEnd[c]===Infinity) continue;
-        if(x.ss.startMin >= chainEnd[c] + REPO_BUF*60){
+        const lastTrip=chains[c][chains[c].length-1];
+        if(x.ss.startMin >= chainEnd[c] + turnaroundMin(lastTrip, x)){
           chains[c].push(x); chainEnd[c]=x.ss.startMin+x.ss.spanHrs*60; placed=true; break;
         }
       }
@@ -1990,8 +2016,10 @@ function dayTimelineCheck(){
             continue;
           }
         }
-        if(gapH<0.5){
-          findings.push({sev:'info', text:date+': only '+(gapH*60).toFixed(0)+' min between trips '+(A.i+1)+' & '+(B.i+1)+' on the same '+cname+' — tight transition; confirm repositioning.'});
+        const turnMin=turnaroundMin(A,B), spareMin=gapH*60-turnMin;
+        if(spareMin<15){
+          const repoM=repoMinutes(A,B);
+          findings.push({sev:'info', text:date+': trips '+(A.i+1)+' & '+(B.i+1)+' on the same '+cname+' — turnaround needs ~'+turnMin+' min ('+repoM+' repositioning + 5 prep + 15 early arrival'+(B.t.meetGreet?' + 10 inside greet':'')+') vs '+(gapH*60).toFixed(0)+' min available ('+(spareMin>=0?Math.round(spareMin)+' min spare':'over by '+Math.round(-spareMin)+' min')+'). Tight — confirm.'});
         }
       }
     });
