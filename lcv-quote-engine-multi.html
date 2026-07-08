@@ -908,8 +908,16 @@ function priceTrip(trip){
   const veh=trip.vehicle||'sedan';
   const std=+trip.driveStd||0, busy=+trip.driveBusy||0;
   const median=(std+busy)/2;
-  const waived=Math.max(0,median-15);
   const airport=isAirportKind(k);
+  // En-route stops apply ONLY to airport & P2P — the gate must govern both the billed
+  // minutes AND the dead-head basis switch (an hourly trip must never switch basis).
+  const stops=(airport||k==='p2p') ? (trip.stops||[]) : [];
+  // Dead-head proxy: with en-route stops, the empty legs follow the DIRECT route —
+  // use the direct pickup→dropoff median when available so the detour isn't triple-counted.
+  const dhMedian=(stops.length>0 && trip.driveDirectStd!=null)
+    ? ((+trip.driveDirectStd)+(+trip.driveDirectBusy||+trip.driveDirectStd))/2
+    : median;
+  const waived=Math.max(0,dhMedian-15);
   let billHours;
   if(airport){
     billHours=(median/60)+(waived/60);                 // service drive out + waived dead-head back
@@ -918,9 +926,6 @@ function priceTrip(trip){
   } else { // p2p
     billHours=(median/60)+(waived/60)*2;               // service drive + round-trip waived dead-head
   }
-  // En-route stops (airport & P2P): each stop bills STOP_INCLUDED_MIN built-in minutes;
-  // the added route time itself arrives via live drive times routed THROUGH the stops.
-  const stops=(airport||k==='p2p') ? (trip.stops||[]) : [];
   if(stops.length){ billHours += stops.length*STOP_INCLUDED_MIN/60; }
   const rate=tierRate(veh,billHours);
   const floor=STD[veh]?STD[veh].floor:0;
@@ -1284,6 +1289,11 @@ async function refreshTripTimes(trip, statusEl){
     if(statusEl) statusEl.textContent='Fetching live drive times…';
     const dep=deptISOfor(trip);
     const pair=await fetchLegPair(from,to,dep.iso,intermediates);
+    // Dead-head basis: the chauffeur's empty legs follow the DIRECT route, not the stop detour.
+    if(intermediates.length){
+      const direct=await fetchLegPair(from,to,dep.iso);
+      trip.driveDirectStd=direct.std; trip.driveDirectBusy=direct.busy;
+    } else { trip.driveDirectStd=null; trip.driveDirectBusy=null; }
     trip.driveStd=pair.std; trip.driveBusy=pair.busy;
     trip._lastFetchKey=driveInputKey(trip); // mark these inputs as fetched (de-dup)
     const spread=pair.busy-pair.std;
