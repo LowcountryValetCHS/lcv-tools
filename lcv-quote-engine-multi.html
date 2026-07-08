@@ -239,6 +239,8 @@ const M=n=>'$'+Math.round(n).toLocaleString();
 // ============================================================================
 const STD={ sedan:{floor:120,r2:95,r4:95,name:'Luxury Sedan'}, fsuv:{floor:140,r2:120,r4:120,name:'Full Size SUV'},
   vsuv:{floor:150,r2:130,r4:130,name:'VIP SUV'}, svan:{floor:220,r2:190,r4:175,name:'Sprinter Van'}, slimo:{floor:300,r2:200,r4:185,name:'Sprinter Limo'} };
+const WAIT_RATE={sedan:30,fsuv:30,vsuv:30,svan:50,slimo:50}; // $ per 15-min wait increment (spec 7.3)
+const STOP_INCLUDED_MIN=10, STOP_INCR_MIN=15; // en-route stops: 10 min built in, overage in 15-min increments
 const GREETER_RATE=50, GREETER_MIN_HRS=3, GREETER_SETUP_HRS=1; // $50/hr, 3hr min, +20% grat; 1h setup/prep added to greeting hours
 
 // ============================================================================
@@ -916,6 +918,10 @@ function priceTrip(trip){
   } else { // p2p
     billHours=(median/60)+(waived/60)*2;               // service drive + round-trip waived dead-head
   }
+  // En-route stops (airport & P2P): each stop bills STOP_INCLUDED_MIN built-in minutes;
+  // the added route time itself arrives via live drive times routed THROUGH the stops.
+  const stops=(airport||k==='p2p') ? (trip.stops||[]) : [];
+  if(stops.length){ billHours += stops.length*STOP_INCLUDED_MIN/60; }
   const rate=tierRate(veh,billHours);
   const floor=STD[veh]?STD[veh].floor:0;
   const minHrs=airport?0.75:2;
@@ -925,6 +931,23 @@ function priceTrip(trip){
   const usedFloor=floor>=timeCalc;
   lines.push({lbl:'Billable hrs', val:null, txt:billHours.toFixed(2)+(billedHrs>billHours?' → '+billedHrs.toFixed(2)+' (min)':''), sub:true});
   lines.push({lbl:usedFloor?'Base (vehicle floor)':'Base ('+billedHrs.toFixed(2)+'h × $'+rate+')', val:base});
+  // Stop lines: included minutes note + dwell overage at the wait rate (service revenue, in base)
+  if(stops.length){
+    lines.push({lbl:'En-route stops ('+stops.length+' × '+STOP_INCLUDED_MIN+' min included in billable hrs)', val:null, txt:stops.length+' stop'+(stops.length>1?'s':''), sub:true});
+    let overTotal=0, overParts=[];
+    stops.forEach((st,si)=>{
+      const over=Math.max(0,(+st.dwellMin||STOP_INCLUDED_MIN)-STOP_INCLUDED_MIN);
+      if(over>0){
+        const inc=Math.ceil(over/STOP_INCR_MIN);
+        overTotal+=inc*(WAIT_RATE[veh]||30);
+        overParts.push('stop '+(si+1)+': '+over+' min over → '+inc+' × $'+(WAIT_RATE[veh]||30));
+      }
+    });
+    if(overTotal>0){
+      base+=overTotal;
+      lines.push({lbl:'Stop dwell overage ('+overParts.join('; ')+')', val:overTotal, sub:true});
+    }
+  }
 
   // ---- LATE-NIGHT (11:30pm–6:30am): $35/hr on SERVICE hours falling in the window. ----
   // Service revenue → IN base (gets gratuity). Only the portion overlapping the window is charged.
@@ -1181,12 +1204,14 @@ function deptISOfor(trip){
   if(d.getTime() < now.getTime()+60000) return {iso:new Date(now.getTime()+120000).toISOString(), past:true};
   return {iso:d.toISOString(), past:false};
 }
-async function fetchLegPair(from,to,departISO){
-  const ck=from.lat+','+from.lng+'|'+to.lat+','+to.lng+'|'+(departISO||'now');
+async function fetchLegPair(from,to,departISO,intermediates){
+  const via=(intermediates||[]).map(p=>p.lat+','+p.lng).join('>');
+  const ck=from.lat+','+from.lng+'|'+to.lat+','+to.lng+'|'+via+'|'+(departISO||'now');
   if(driveCache[ck]) return driveCache[ck];
   async function one(model){
     const body={origin:{location:{latLng:{latitude:from.lat,longitude:from.lng}}},
       destination:{location:{latLng:{latitude:to.lat,longitude:to.lng}}},
+      ...((intermediates&&intermediates.length)?{intermediates:intermediates.map(p=>({location:{latLng:{latitude:p.lat,longitude:p.lng}}}))}:{}),
       travelMode:"DRIVE", routingPreference:"TRAFFIC_AWARE_OPTIMAL", trafficModel:model,
       ...(departISO?{departureTime:departISO}:{})};
     const res=await fetch("https://routes.googleapis.com/directions/v2:computeRoutes",{
@@ -1212,7 +1237,7 @@ async function fetchLegPair(from,to,departISO){
 // re-firing when any drive-time-affecting input (locations, date, time) changes,
 // but waiting for a pause and skipping if the inputs haven't actually changed.
 const _autoFetchTimers = {};
-function driveInputKey(trip){ return [trip.fromKey, trip.toKey, trip.fromAddr, trip.toAddr, trip.date, trip.time].join('|'); }
+function driveInputKey(trip){ return [trip.fromKey, trip.toKey, trip.fromAddr, trip.toAddr, trip.date, trip.time, (trip.stops||[]).map(s=>s.key+'~'+s.addr).join('+')].join('|'); }
 
 function autoFetchEligible(trip){
   // retail only (partners use flat tables), standard-fleet airport/P2P/hourly, all inputs present
@@ -1252,9 +1277,13 @@ async function refreshTripTimes(trip, statusEl){
     // store resolved coords so gate detection (and future distance logic) can use exact-address positions
     trip._fromGeo={lat:from.lat,lng:from.lng};
     trip._toGeo={lat:to.lat,lng:to.lng};
+    // Resolve en-route stops → intermediates (route THROUGH them); skip unset stops
+    const stopLocs=(trip.stops||[]).map(st=>resolveLoc(st.key, st.addr)).filter(Boolean);
+    const stopGeos=await Promise.all(stopLocs.map(L=>geocodeLoc(L)));
+    const intermediates=stopGeos.filter(g=>g&&g.lat!=null);
     if(statusEl) statusEl.textContent='Fetching live drive times…';
     const dep=deptISOfor(trip);
-    const pair=await fetchLegPair(from,to,dep.iso);
+    const pair=await fetchLegPair(from,to,dep.iso,intermediates);
     trip.driveStd=pair.std; trip.driveBusy=pair.busy;
     trip._lastFetchKey=driveInputKey(trip); // mark these inputs as fetched (de-dup)
     const spread=pair.busy-pair.std;
@@ -1331,6 +1360,7 @@ function makeTrip(kind){
     otrTimeline:[ {label:'Day 1', driveHrs:3, onDutyHrs:5}, {label:'Day 2', driveHrs:8, onDutyHrs:11} ],
     otrSameDayArrival:true,
     fromKey:'none', toKey:'none',   // location dropdown selections
+    stops:[],                        // en-route stops: {key, addr, dwellMin} — P2P & airport
     fromAddr:'', toAddr:'',          // free-text exact addresses when key === '__exact__'
     driveStd:20, driveBusy:28,
     date:'', time:'14:00',
@@ -1719,6 +1749,27 @@ function tripBodyHTML(trip){
 }
 
 // Standard-fleet body (airport / p2p / hourly) — extracted so hourly can prepend its selector.
+// En-route stops block (P2P & airport): ordered stops, each with location + estimated dwell.
+// 10 min per stop is built into billable time; dwell beyond that bills in 15-min increments
+// at the wait rate. Live drive times route THROUGH the stops.
+function stopsBlockHTML(trip){
+  const stops=trip.stops||[];
+  let h='<div class="stops-block">';
+  stops.forEach((st,i)=>{
+    h+='<div class="row3" style="margin-top:8px;align-items:end;">'
+      + '<div><label style="margin-top:0;">Stop '+(i+1)+'</label><select data-stopidx="'+i+'" data-stopfield="key">'+locOpts(st.key)+'</select>'
+      + (st.key===EXACT_KEY ? '<input type="text" data-stopidx="'+i+'" data-stopfield="addr" value="'+(st.addr||'').replace(/"/g,'&quot;')+'" placeholder="Venue name or address" style="margin-top:6px;width:100%;">' : '')
+      + '</div>'
+      + '<div><label style="margin-top:0;">Est. stop time (min)</label><input type="number" data-stopidx="'+i+'" data-stopfield="dwellMin" value="'+(st.dwellMin!=null?st.dwellMin:STOP_INCLUDED_MIN)+'" min="0" step="5"></div>'
+      + '<div><button class="addbtn ghost" type="button" data-stopdel="'+i+'" style="width:100%">Remove</button></div>'
+      + '</div>';
+  });
+  h+='<button class="addbtn" type="button" data-stopadd="1" style="margin-top:8px;">+ Add stop</button>';
+  if(stops.length) h+='<div class="hint" style="margin-top:6px;">'+STOP_INCLUDED_MIN+' min per stop is built into the billed time; dwell beyond that bills in '+STOP_INCR_MIN+'-min increments at the wait rate. Live drive times route through the stops.</div>';
+  h+='</div>';
+  return h;
+}
+
 function standardFleetBodyHTML(trip){
   const k=trip.kind;
   const airport=isAirportKind(k);
@@ -1766,6 +1817,7 @@ function standardFleetBodyHTML(trip){
     +   '<div><label style="margin-top:0;">'+fromLbl+'</label>'+fromPicker+'</div>'
     +   '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
     + '</div>'
+    + (k!=='hourly' ? stopsBlockHTML(trip) : '')
     + '<div class="row2" style="margin-top:10px;">'
     +   hoursField
     +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
@@ -2132,6 +2184,22 @@ $('tripList').addEventListener('click',e=>{
     fetchOtrLegs(trip,statusEl).finally(()=>{ otrFetch.disabled=false; });
     return;
   }
+  // En-route stops: add / remove
+  const stopAdd=e.target.closest('[data-stopadd]');
+  const stopDel=e.target.closest('[data-stopdel]');
+  if(stopAdd||stopDel){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    if(!trip.stops) trip.stops=[];
+    if(stopAdd){ trip.stops.push({key:'none', addr:'', dwellMin:STOP_INCLUDED_MIN}); }
+    if(stopDel){ trip.stops.splice(+stopDel.dataset.stopdel,1); }
+    trip._lastFetchKey=null;
+    computeTrip(trip);
+    const body=card.querySelector('.trip-body');
+    if(body) body.innerHTML=tripBodyHTML(trip)+tripBreakdownHTML(trip);
+    refreshSubtotalUI(trip); renderSummary();
+    return;
+  }
   // OTR planner: add / remove a timeline day
   const addDay=e.target.closest('[data-otraddday]');
   const delDay=e.target.closest('[data-otrdelday]');
@@ -2187,6 +2255,27 @@ async function acSelect(trip, addrField, pred){
 }
 
 $('tripList').addEventListener('input',e=>{
+  // En-route stop fields
+  if(e.target.dataset.stopidx!==undefined){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const si=+e.target.dataset.stopidx, sf=e.target.dataset.stopfield;
+    if(!trip.stops||!trip.stops[si]) return;
+    trip.stops[si][sf]= (sf==='dwellMin') ? (+e.target.value||0) : e.target.value;
+    trip._lastFetchKey=null;
+    if(sf==='key'){
+      // switching to/from exact address changes which inputs show → rebuild body
+      computeTrip(trip);
+      const body=card.querySelector('.trip-body');
+      if(body) body.innerHTML=tripBodyHTML(trip)+tripBreakdownHTML(trip);
+      refreshSubtotalUI(trip); renderSummary();
+      scheduleAutoFetch(trip);
+      return;
+    }
+    computeTrip(trip); refreshSubtotalUI(trip); renderSummary();
+    if(sf==='addr') scheduleAutoFetch(trip);
+    return;
+  }
   // Autocomplete typing
   const acField=e.target.dataset.ac;
   if(acField){
