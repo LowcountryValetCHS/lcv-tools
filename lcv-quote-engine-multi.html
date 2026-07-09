@@ -294,6 +294,21 @@ const FMCSA_MAX_DRIVE=10, FMCSA_MAX_ONDUTY=15, FMCSA_REST=8;
 // center — refine to the exact yard address if pickups ever start elsewhere.)
 const OTR_YARD={ name:'Hollywood yard', lat:32.7346, lng:-80.2415 };
 
+// Retail staging base — dead-head reference for hourly bookings (downtown Charleston hub).
+// Refine to the actual retail garage/staging location if different.
+const RETAIL_BASE={ name:'Charleston base', lat:32.7876, lng:-79.9403 };
+function havMilesG(a,b){
+  const R=3958.8, toR=x=>x*Math.PI/180;
+  const dLat=toR(b.lat-a.lat), dLng=toR(b.lng-a.lng);
+  const h=Math.sin(dLat/2)**2 + Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+function coordsOf(key, geo, addr){
+  if(geo && geo.lat!=null) return geo;
+  const L=resolveLoc(key, addr);
+  return (L && L.lat!=null) ? {lat:L.lat,lng:L.lng} : null;
+}
+
 // Single-call Routes fetch for an OTR leg: duration (PESSIMISTIC — conservative is the
 // right bias for legal-feasibility planning) + distance for the fuel calc.
 async function fetchOtrLeg(from,to,departISO){
@@ -1021,7 +1036,21 @@ function priceTrip(trip){
   if(airport){
     billHours=(median/60)+(waived/60);                 // service drive out + waived dead-head back
   } else if(k==='hourly'){
-    billHours=(+trip.hours||0)+(waived/60)*2;          // booked hours + round-trip waived dead-head
+    // Hourly dead-head = base→first pickup + final dropoff→base (booked hours span
+    // pickup to dropoff; the chauffeur's empty legs are relative to the Charleston base).
+    // Coordinates → planning speed 30 mph, 15-min grace per leg; no coords → old proxy.
+    const pc=coordsOf(trip.fromKey, trip._fromGeo, trip.fromAddr);
+    const dc=coordsOf(trip.toKey, trip._toGeo, trip.toAddr);
+    if(pc||dc){
+      const legOut=pc?Math.round(havMilesG(RETAIL_BASE,pc)/30*60):0;
+      const legBack=dc?Math.round(havMilesG(dc,RETAIL_BASE)/30*60):0;
+      const wOut=Math.max(0,legOut-DH_GRACE_MIN), wBack=Math.max(0,legBack-DH_GRACE_MIN);
+      billHours=(+trip.hours||0)+(wOut+wBack)/60;
+      trip._hourlyDh={legOut,legBack,wOut,wBack};
+    } else {
+      billHours=(+trip.hours||0)+(waived/60)*2;        // fallback proxy when no locations set
+      trip._hourlyDh=null;
+    }
   } else { // p2p
     billHours=(median/60)+(waived/60)*2;               // service drive + round-trip waived dead-head
   }
@@ -1033,6 +1062,10 @@ function priceTrip(trip){
   const timeCalc=billedHrs*rate;
   let base=Math.max(floor,timeCalc);
   const usedFloor=floor>=timeCalc;
+  if(k==='hourly' && trip._hourlyDh){
+    const d=trip._hourlyDh;
+    lines.push({lbl:'Dead-head: base→pickup '+d.legOut+'min + dropoff→base '+d.legBack+'min (15-min grace/leg → '+(d.wOut+d.wBack)+' min billed)', val:null, txt:'', sub:true});
+  }
   lines.push({lbl:'Billable hrs', val:null, txt:billHours.toFixed(2)+(billedHrs>billHours?' → '+billedHrs.toFixed(2)+' (min)':''), sub:true});
   lines.push({lbl:usedFloor?'Base (vehicle floor)':'Base ('+billedHrs.toFixed(2)+'h × $'+rate+')', val:base});
   // Stop lines: included minutes note + dwell overage at the wait rate (service revenue, in base)
@@ -1737,6 +1770,7 @@ function otrPlannerHTML(trip){
       + '<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(rec?' <span class="rec-badge">recommended</span>':'')+(chosen?' <span class="rec-badge" style="background:#2f5d43;">✓ applied to quote</span>':'')+'</div>'
       + '<div class="otr-opt-meta">'+o.days+' days · '+o.overnights+' nights · '+o.drivers+' driver'+(o.drivers>1?'s':'')+(o.shuttle?' · +'+M(o.shuttle)+' shuttle':'')+'</div>'
       + '<div class="otr-opt-price">'+M(p.cardTotal)+' <span class="otr-ach">card · '+M(p.achTotal)+' ACH</span></div>'
+      + '<div class="otr-opt-note" style="opacity:.85;">Driver '+M(p.components.driver)+' · Fuel '+M(p.components.fuel)+' · Lodging '+M(p.components.lodging)+' · Per diem '+M(p.components.perdiem)+' · Vehicle '+M(p.components.vehicleDay)+(p.components.shuttle?' · <strong>Shuttle '+M(p.components.shuttle)+'</strong>':'')+' · +20% grat</div>'
       + '<div class="otr-opt-note">'+o.note+'</div>'
       + (o.legal&&!chosen ? '<button class="addbtn" type="button" data-otruse="'+o.key+'" style="margin-top:8px;">Use this option</button>' : '')
       + '</div>';
@@ -1871,6 +1905,15 @@ function hourlyTypeSelector(trip){
   return '<div><label style="margin-top:0;">Hourly type</label><select data-hourlytype="1">'+opts+'</select></div>';
 }
 
+// Trip type switcher — lets the agent change a card's service type after adding it.
+// Hourly-family cards keep their sub-type when the group stays Hourly.
+function tripTypeSelectorHTML(trip){
+  const groups=[['fromairport','From Airport'],['toairport','To Airport'],['p2p','Point-to-Point'],['hourly','Hourly (time-based)'],['otr','Over-the-Road']];
+  const cur=isHourlyFamily(trip.kind)?'hourly':trip.kind;
+  return '<div class="row2" style="margin-bottom:10px;"><div><label style="margin-top:0;">Trip type</label><select data-tripgroup="1">'
+    + groups.map(g=>'<option value="'+g[0]+'"'+(g[0]===cur?' selected':'')+'>'+g[1]+'</option>').join('')
+    + '</select></div><div></div></div>';
+}
 function tripBodyHTML(trip){
   const k=trip.kind;
   if(k==='standby'||k==='secondary'){
@@ -1879,12 +1922,13 @@ function tripBodyHTML(trip){
       : 'Operations adds this as an emergency-backup chauffeur. Becomes its own LA reservation (Standby). Not a client line item.';
     return '<div class="hint" style="margin-top:0;">'+why+'</div>';
   }
+  const typeSel=tripTypeSelectorHTML(trip);
   if(k==='otr'){
-    return otrBodyHTML(trip);
+    return typeSel+otrBodyHTML(trip);
   }
   // Hourly family — prepend the sub-type selector, then the type-specific body.
   if(isHourlyFamily(k)){
-    const sel='<div class="hourly-typebar">'+hourlyTypeSelector(trip)+'</div>';
+    const sel=typeSel+'<div class="hourly-typebar">'+hourlyTypeSelector(trip)+'</div>';
     if(k==='vintage') return sel+vintageBodyHTML(trip);
     if(k==='bus') return sel+busBodyHTML(trip);
     if(k==='greeter') return sel
@@ -1898,9 +1942,9 @@ function tripBodyHTML(trip){
   }
   // From/To Airport + P2P (not hourly family)
   if(isPartnerRouting(currentRouting()) && (isAirportKind(k)||k==='p2p'||k==='hourly')){
-    return partnerBodyHTML(trip, k, currentRouting());
+    return typeSel+partnerBodyHTML(trip, k, currentRouting());
   }
-  return standardFleetBodyHTML(trip);
+  return typeSel+standardFleetBodyHTML(trip);
 }
 
 // Standard-fleet body (airport / p2p / hourly) — extracted so hourly can prepend its selector.
@@ -1918,7 +1962,9 @@ function stopsBlockHTML(trip){
       + '</div>';
   });
   h+='<button class="addbtn" type="button" data-stopadd="1" style="margin-top:8px;">+ Add stop</button>';
-  if(stops.length) h+='<div class="hint" style="margin-top:6px;">'+STOP_INCLUDED_MIN+' min per stop is built into the billed time; dwell beyond that bills in '+STOP_INCR_MIN+'-min increments at the wait rate. Live drive times route through the stops.</div>';
+  if(stops.length) h+='<div class="hint" style="margin-top:6px;">'+(trip.kind==='hourly'
+    ? 'Hourly stops are within the booked hours — no extra stop billing; listed for routing and the itinerary.'
+    : STOP_INCLUDED_MIN+' min per stop is built into the billed time; dwell beyond that bills in '+STOP_INCR_MIN+'-min increments at the wait rate. Live drive times route through the stops.')+'</div>';
   h+='</div>';
   return h;
 }
@@ -1944,14 +1990,14 @@ function standardFleetBodyHTML(trip){
     fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr);
     toPicker=airportFieldHTML('toKey',trip.toKey,'toAddr',trip.toAddr);
   } else { // p2p / hourly
-    fromLbl='Pickup / from'; toLbl=(k==='hourly'?'Primary location':'Dropoff / to');
+    fromLbl=(k==='hourly'?'First pickup':'Pickup / from'); toLbl=(k==='hourly'?'Final dropoff (end of booked hours)':'Dropoff / to');
     fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr);
     toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr);
   }
   const hoursField = (k==='hourly')
     ? '<div><label style="margin-top:0;">Booked hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
     : '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>';
-  const billNote = k==='hourly'?'Hourly bills booked hours + round-trip dead-head.':(airport?'Airport bills service drive out + waived dead-head back.':'P2P bills the drive + round-trip waived dead-head.');
+  const billNote = k==='hourly'?'Hourly bills booked hours (first pickup → final dropoff) + dead-head from the Charleston base to the pickup and back from the dropoff (15-min grace per leg).':(airport?'Airport bills service drive out + waived dead-head back.':'P2P bills the drive + round-trip waived dead-head.');
   return ''
     + '<div class="row2">'
     +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
@@ -1960,20 +2006,15 @@ function standardFleetBodyHTML(trip){
         : hoursField)
     + '</div>'
     + (k==='hourly' ? '<div class="row2" style="margin-top:10px;">'+hoursField+'<div></div></div>' : '')
-    + (k==='hourly'
-        ? '<div class="row2" style="margin-top:10px;">'
-          + '<div><label style="margin-top:0;">'+fromLbl+'</label>'+fromPicker+'</div>'
-          + '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
-          + '</div>'
-        : '<div class="row2" style="margin-top:10px;">'
-          + '<div><label style="margin-top:0;">'+fromLbl+'</label>'+fromPicker+'</div>'
-          + '<div></div>'
-          + '</div>'
-          + stopsBlockHTML(trip)
-          + '<div class="row2" style="margin-top:10px;">'
-          + '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
-          + '<div></div>'
-          + '</div>')
+    + '<div class="row2" style="margin-top:10px;">'
+    + '<div><label style="margin-top:0;">'+fromLbl+'</label>'+fromPicker+'</div>'
+    + '<div></div>'
+    + '</div>'
+    + stopsBlockHTML(trip)
+    + '<div class="row2" style="margin-top:10px;">'
+    + '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
+    + '<div></div>'
+    + '</div>' 
     + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOpts(trip.vehicle)+'</select></div>'
     +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
@@ -2470,6 +2511,17 @@ $('tripList').addEventListener('input',e=>{
     return;
   }
   // Autocomplete typing
+  // Trip type switcher — change the card's service group in place
+  if(e.target.dataset.tripgroup){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const v=e.target.value;
+    if(v==='hourly'){ if(!isHourlyFamily(trip.kind)) trip.kind='hourly'; }
+    else trip.kind=v;
+    computeTrip(trip);
+    renderTrips(); renderSummary();
+    return;
+  }
   const acField=e.target.dataset.ac;
   if(acField){
     const card=e.target.closest('[data-tid]'); if(!card) return;
