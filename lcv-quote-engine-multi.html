@@ -120,6 +120,7 @@
   .otr-opts{margin-top:10px;display:flex;flex-direction:column;gap:8px;}
   .otr-opt{border:1px solid var(--line);border-radius:5px;padding:9px 11px;background:#fcfaf4;}
   .otr-opt.rec{border-color:var(--marsh);border-width:2px;background:#f2f7f4;}
+  .otr-opt.chosen{outline:2px solid #2f5d43;}
   .otr-opt.illegal{opacity:.6;background:#f6f0ee;}
   .otr-opt-head{font-size:13px;font-weight:700;color:var(--ink);}
   .rec-badge{font-size:10px;background:var(--marsh);color:#fff;padding:2px 7px;border-radius:999px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;}
@@ -369,6 +370,13 @@ function otrPriceOption(opt, miles, season, tolls){
 
 // A "day" = { label, driveHrs, onDutyHrs (driving + load/unload/service on-duty) }
 // Returns feasibility per day + trip-level analysis.
+// Effective OTR season: agent override wins; otherwise derived from the start date
+// using the established seasonality calendar (same month mapping as buses).
+function otrEffSeason(trip){
+  if(trip.otrSeason) return trip.otrSeason;
+  if(trip.date){ const d=new Date(trip.date+'T00:00:00'); if(!isNaN(d)) return busSeasonOf(d.getMonth()); }
+  return 'standard';
+}
 function otrFeasibility(days){
   const dayResults = days.map(d=>{
     const driveOK = d.driveHrs <= FMCSA_MAX_DRIVE;
@@ -388,8 +396,9 @@ function otrFeasibility(days){
 
 // Given the base OTR params + the feasibility result, generate the legal options.
 // Each option returns {key,label,legal,days,overnights,drivers,shuttle,note}.
-function otrOptions(base){
-  // base = {days, overnights, miles, season, feasibility, hasTenHourDay, sameDayArrival}
+function otrOptions(base, timeline, legs){
+  // Each variant is verified against its OWN modified timeline — an option that doesn't
+  // actually cure the violations is shown illegal, not recommended.
   const opts=[];
   const feasible = base.feasibility.feasible;
 
@@ -403,20 +412,38 @@ function otrOptions(base){
   });
 
   if(!feasible){
-    // Option 2: relief driver staged (adds a driver across committed days; requires same-day arrival)
+    // Option 2: relief driver — two drivers share the wheel. Approximate team cap:
+    // combined driving ≤ 2 × 10h per day. Days beyond even that need restructuring.
+    const tl=timeline||[];
+    const reliefBad=tl.filter(d=>(+d.driveHrs||0) > 2*FMCSA_MAX_DRIVE);
     opts.push({
       key:'relief', label:'Relief driver (staged ahead)',
-      legal:true,
+      legal: reliefBad.length===0,
       days:base.days, overnights:base.overnights, drivers:2, shuttle:base.reliefShuttle||175,
-      note:'2nd driver pre-rested 8h at the handoff point. Doubles driver/lodging/per-diem; adds a positioning shuttle. Needed when same-day arrival is required.'
+      note: reliefBad.length===0
+        ? '2nd driver pre-rested 8h at the handoff point — the two share the wheel, covering days up to 20h of driving. Doubles driver/lodging/per-diem; adds a positioning shuttle.'
+        : 'Not legal even with 2 drivers: '+reliefBad.map(d=>d.label+' — '+(+d.driveHrs).toFixed(1)+'h > 20h team cap').join('; ')+'. Restructure the days.'
     });
-    // Option 3: staged bus — position the night before, big drive becomes a standalone day.
-    // Adds one committed day + one overnight, stays single driver.
+    // Option 3: staged bus — position the night before so Day 1's drive splits into a
+    // position day + a clean haul day. Cures ONLY a Day-1 violation; re-verify the rest.
+    let stagedFeas={feasible:false, infeasibleDays:[]};
+    if(tl.length){
+      const d1=tl[0];
+      const pos = (legs&&legs.posHrs!=null)? +legs.posHrs : (+d1.driveHrs||0)/2;
+      const haul= (legs&&legs.haulHrs!=null)? +legs.haulHrs : (+d1.driveHrs||0)/2;
+      const stagedTl=[
+        {label:'Day 0 (position, night before)', driveHrs:pos, onDutyHrs:pos+2},
+        {label:(d1.label||'Day 1')+' — haul only', driveHrs:haul, onDutyHrs:haul+2}
+      ].concat(tl.slice(1));
+      stagedFeas=otrFeasibility(stagedTl);
+    }
     opts.push({
       key:'staged', label:'Bus staged night before (+1 day)',
-      legal:true,
+      legal: stagedFeas.feasible,
       days:base.days+1, overnights:base.overnights+1, drivers:1, shuttle:0,
-      note:'Driver positions to the staging point on a light day, rests overnight, so the long drive is a clean standalone duty day. One extra committed day + overnight, single driver.'
+      note: stagedFeas.feasible
+        ? 'Driver positions to the staging point on a light day, rests overnight, so the long drive is a clean standalone duty day. One extra committed day + overnight, single driver.'
+        : 'Staging only fixes Day 1 — still not legal: '+stagedFeas.infeasibleDays.map(d=>d.label+' — '+d.violation).join('; ')+'.'
     });
   }
   return opts;
@@ -813,7 +840,7 @@ function priceTrip(trip){
     const overnights=Math.max(0, +trip.otrOvernights||0);
     const miles=Math.max(0, +trip.otrMiles||0);
     const drivers=Math.max(1, +trip.otrDrivers||1);
-    const season=trip.otrSeason||'standard';
+    const season=otrEffSeason(trip);
     const driver=OTR_DRIVER_DAY*days*drivers;
     const fuel=(miles/OTR_MPG)*OTR_DIESEL;
     const lodging=OTR_LODGING_NIGHT*overnights*drivers;
@@ -1132,8 +1159,15 @@ function locFieldHTML(keyField, addrField, keyVal, addrVal, stopIdx){
 }
 
 // Airports stay a dropdown — choosing among four terminals is faster than typing.
-function airportFieldHTML(keyField, keyVal){
-  return '<select data-f="'+keyField+'">'+airportOpts(keyVal)+'</select>';
+// "Exact address" in the dropdown opens the unified autocomplete (FBOs, other airports).
+function airportFieldHTML(keyField, keyVal, addrField, addrVal){
+  let h='<select data-f="'+keyField+'">'+airportOpts(keyVal)+'</select>';
+  if(keyVal===EXACT_KEY){
+    h+='<div class="ac-wrap" data-acwrap="'+addrField+'" style="margin-top:6px;">'
+      +'<input type="text" data-ac="'+addrField+'" data-ackey="'+keyField+'" data-acaddr="'+addrField+'" autocomplete="off" value="'+(addrVal||'').replace(/"/g,'&quot;')+'" placeholder="FBO, terminal, or address…" style="width:100%;">'
+      +'<div class="ac-list" data-aclist="'+addrField+'" style="display:none;"></div></div>';
+  }
+  return h;
 }
 
 async function geocodeLoc(loc){
@@ -1408,7 +1442,7 @@ function makeTrip(kind){
     // vintage inputs
     vintageType:'convertible', vintageServiceHrs:2, vintageNonconsecHrs:0, vintageDeadheadMin:40,
     // OTR inputs
-    otrBus:'mc4957', otrDays:3, otrOvernights:2, otrMiles:540, otrSeason:'standard', otrDrivers:1,
+    otrBus:'mc4957', otrDays:3, otrOvernights:2, otrMiles:540, otrSeason:'', otrDrivers:1,
     otrTolls:0, otrReliefShuttle:0,
     // OTR planner (advisory) — per-day drive/on-duty estimates
     otrPlannerOn:false,
@@ -1565,16 +1599,21 @@ function partnerBodyHTML(trip, k, partnerKey){
 function vintageTypeOpts(sel){ return Object.keys(VINTAGE).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+VINTAGE[k].name+'</option>').join(''); }
 function otrBodyHTML(trip){
   const days=Math.max(1,+trip.otrDays||1), overnights=Math.max(0,+trip.otrOvernights||0), miles=Math.max(0,+trip.otrMiles||0);
-  const drivers=Math.max(1,+trip.otrDrivers||1), season=trip.otrSeason||'standard';
+  const drivers=Math.max(1,+trip.otrDrivers||1), season=otrEffSeason(trip);
   const fuel=(miles/OTR_MPG)*OTR_DIESEL;
   const est=OTR_DRIVER_DAY*days*drivers + fuel + OTR_LODGING_NIGHT*overnights*drivers + OTR_PERDIEM_DAY*days*drivers + (OTR_VEHICLE_DAY[season]||900)*days;
   const busOpts=Object.keys(BUSES).map(k=>'<option value="'+k+'"'+(k===trip.otrBus?' selected':'')+'>'+BUSES[k].name+'</option>').join('');
-  const seasonOpt=(v,l)=>'<option value="'+v+'"'+(trip.otrSeason===v?' selected':'')+'>'+l+'</option>';
+  const effSeason=otrEffSeason(trip);
+  const seasonOpt=(v,l)=>'<option value="'+v+'"'+((trip.otrSeason||'')===v?' selected':'')+'>'+l+'</option>';
   return ''
     + '<div class="dew-banner">Over-the-road / multiday — cost-up pricing. Duty-day &amp; relief-driver determination (FMCSA) comes with the planner; here you enter the trip parameters. Mileage measured round-trip from the Hollywood yard.</div>'
     + '<div class="row2">'
+    +   '<div><label style="margin-top:0;">Start date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+    +   '<div><label style="margin-top:0;">Season (vehicle day rate)</label><select data-f="otrSeason">'+seasonOpt('','Auto from date — '+effSeason+' ($'+(OTR_VEHICLE_DAY[effSeason]||900)+')')+seasonOpt('peak','Override: Peak $1000')+seasonOpt('standard','Override: Standard $900')+seasonOpt('slow','Override: Slow $800')+seasonOpt('dead','Override: Dead $700')+'</select></div>'
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Bus</label><select data-f="otrBus">'+busOpts+'</select></div>'
-    +   '<div><label style="margin-top:0;">Season (vehicle day rate)</label><select data-f="otrSeason">'+seasonOpt('peak','Peak $1000')+seasonOpt('standard','Standard $900')+seasonOpt('slow','Slow $800')+seasonOpt('dead','Dead $700')+'</select></div>'
+    +   '<div></div>'
     + '</div>'
     + '<div class="row3" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Committed days</label><input type="number" data-f="otrDays" value="'+trip.otrDays+'" min="1" step="1"></div>'
@@ -1620,8 +1659,8 @@ function otrPlannerHTML(trip){
   h+='<button class="addbtn" type="button" data-otraddday="1" style="margin-top:8px;">+ Add day</button>';
   // run the analysis
   const feas=otrFeasibility(trip.otrTimeline||[]);
-  const base={days:+trip.otrDays||(trip.otrTimeline||[]).length, overnights:+trip.otrOvernights||0, miles:+trip.otrMiles||0, season:trip.otrSeason||'standard', feasibility:feas, reliefShuttle:+trip.otrReliefShuttle||175};
-  const opts=otrOptions(base).map(o=>({o, p:otrPriceOption(o, base.miles, base.season, +trip.otrTolls||0)}));
+  const base={days:+trip.otrDays||(trip.otrTimeline||[]).length, overnights:+trip.otrOvernights||0, miles:+trip.otrMiles||0, season:otrEffSeason(trip), feasibility:feas, reliefShuttle:+trip.otrReliefShuttle||175};
+  const opts=otrOptions(base, trip.otrTimeline||[], trip._otrLegs||null).map(o=>({o, p:otrPriceOption(o, base.miles, base.season, +trip.otrTolls||0)}));
   opts.sort((a,b)=>(b.o.legal-a.o.legal)||(a.p.cardTotal-b.p.cardTotal));
   // feasibility summary
   h+='<div class="otr-analysis">';
@@ -1635,11 +1674,13 @@ function otrPlannerHTML(trip){
   h+='<div class="otr-opts">';
   opts.forEach(({o,p},idx)=>{
     const rec = o.legal && idx===0;
-    h+='<div class="otr-opt'+(o.legal?'':' illegal')+(rec?' rec':'')+'">'
-      + '<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(rec?' <span class="rec-badge">recommended</span>':'')+'</div>'
+    const chosen = trip.otrChosen===o.key;
+    h+='<div class="otr-opt'+(o.legal?'':' illegal')+(rec?' rec':'')+(chosen?' chosen':'')+'">'
+      + '<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(rec?' <span class="rec-badge">recommended</span>':'')+(chosen?' <span class="rec-badge" style="background:#2f5d43;">✓ applied to quote</span>':'')+'</div>'
       + '<div class="otr-opt-meta">'+o.days+' days · '+o.overnights+' nights · '+o.drivers+' driver'+(o.drivers>1?'s':'')+(o.shuttle?' · +'+M(o.shuttle)+' shuttle':'')+'</div>'
       + '<div class="otr-opt-price">'+M(p.cardTotal)+' <span class="otr-ach">card · '+M(p.achTotal)+' ACH</span></div>'
       + '<div class="otr-opt-note">'+o.note+'</div>'
+      + (o.legal&&!chosen ? '<button class="addbtn" type="button" data-otruse="'+o.key+'" style="margin-top:8px;">Use this option</button>' : '')
       + '</div>';
   });
   h+='</div></div>';
@@ -1838,12 +1879,12 @@ function standardFleetBodyHTML(trip){
   if(k==='toairport' && (!trip.toKey || trip.toKey==='none')) trip.toKey='chs_main';
   if(k==='fromairport'){
     fromLbl='Pickup (airport)'; toLbl='Dropoff';
-    fromPicker=airportFieldHTML('fromKey',trip.fromKey);
+    fromPicker=airportFieldHTML('fromKey',trip.fromKey,'fromAddr',trip.fromAddr);
     toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr);
   } else if(k==='toairport'){
     fromLbl='Pickup'; toLbl='Dropoff (airport)';
     fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr);
-    toPicker=airportFieldHTML('toKey',trip.toKey);
+    toPicker=airportFieldHTML('toKey',trip.toKey,'toAddr',trip.toAddr);
   } else { // p2p / hourly
     fromLbl='Pickup / from'; toLbl=(k==='hourly'?'Primary location':'Dropoff / to');
     fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr);
@@ -2247,6 +2288,24 @@ $('tripList').addEventListener('click',e=>{
     refreshSubtotalUI(trip); renderSummary();
     return;
   }
+  // OTR planner: apply a ranked option to the quote (days / nights / drivers / shuttle)
+  const otrUse=e.target.closest('[data-otruse]');
+  if(otrUse){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const feas=otrFeasibility(trip.otrTimeline||[]);
+    const base={days:+trip.otrDays||(trip.otrTimeline||[]).length, overnights:+trip.otrOvernights||0, miles:+trip.otrMiles||0, season:otrEffSeason(trip), feasibility:feas, reliefShuttle:+trip.otrReliefShuttle||175};
+    const opt=otrOptions(base, trip.otrTimeline||[], trip._otrLegs||null).find(o=>o.key===otrUse.dataset.otruse);
+    if(!opt||!opt.legal) return;
+    trip.otrDays=opt.days; trip.otrOvernights=opt.overnights; trip.otrDrivers=opt.drivers;
+    if(opt.key==='relief' && !(+trip.otrReliefShuttle>0)) trip.otrReliefShuttle=175;
+    trip.otrChosen=opt.key;
+    computeTrip(trip);
+    const body=card.querySelector('.trip-body');
+    if(body) body.innerHTML=tripBodyHTML(trip)+tripBreakdownHTML(trip);
+    refreshSubtotalUI(trip); renderSummary();
+    return;
+  }
   // OTR planner: add / remove a timeline day
   const addDay=e.target.closest('[data-otraddday]');
   const delDay=e.target.closest('[data-otrdelday]');
@@ -2446,7 +2505,7 @@ $('tripList').addEventListener('input',e=>{
   const dewStructural = isPartnerRouting(currentRouting()) && (f==='dewDest'||f==='vehicle');
   const busStructural = trip.kind==='bus' && (f==='busType'||f==='date'||f==='time'||f==='busSeasonOv'||f==='busDayOv'||f==='busTimeOv');
   const vintageStructural = trip.kind==='vintage' && f==='vintageType';
-  const otrStructural = trip.kind==='otr' && (f==='otrDrivers'||f==='otrBus'||f==='otrSeason');
+  const otrStructural = trip.kind==='otr' && (f==='otrDrivers'||f==='otrBus'||f==='otrSeason'||f==='date');
   // Gap planner: keep it open; refresh just the options list (not the inputs) to preserve focus.
   if(f==='gapSeg1'||f==='gapGap'||f==='gapSeg2'||f==='gapStandby'||f==='gapDeadhead'){
     trip.gapPlannerOn=true;
