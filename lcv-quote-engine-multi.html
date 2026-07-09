@@ -1588,8 +1588,8 @@ function otrBodyHTML(trip){
     + '<div class="otr-legs">'
     +   '<div class="otr-legs-hd">Trip addresses (exact — OTR does not use general areas)</div>'
     +   '<div class="row2">'
-    +     '<div><label style="margin-top:0;">Primary pickup address</label><input type="text" data-f="otrPickupAddr" value="'+(trip.otrPickupAddr||'').replace(/"/g,'&quot;')+'" placeholder="e.g. Francis Marion University, Florence SC"></div>'
-    +     '<div><label style="margin-top:0;">Far destination address</label><input type="text" data-f="otrDestAddr" value="'+(trip.otrDestAddr||'').replace(/"/g,'&quot;')+'" placeholder="e.g. University of ___, City ST"></div>'
+    +     '<div><label style="margin-top:0;">Primary pickup address</label><div class="ac-wrap" data-acwrap="otrPickupAddr"><input type="text" data-ac="otrPickupAddr" data-ackey="" data-acaddr="otrPickupAddr" autocomplete="off" value="'+(trip.otrPickupAddr||'').replace(/"/g,'&quot;')+'" placeholder="e.g. Francis Marion University, Florence SC" style="width:100%;"><div class="ac-list" data-aclist="otrPickupAddr" style="display:none;"></div></div></div>'
+    +     '<div><label style="margin-top:0;">Far destination address</label><div class="ac-wrap" data-acwrap="otrDestAddr"><input type="text" data-ac="otrDestAddr" data-ackey="" data-acaddr="otrDestAddr" autocomplete="off" value="'+(trip.otrDestAddr||'').replace(/"/g,'&quot;')+'" placeholder="e.g. University of ___, City ST" style="width:100%;"><div class="ac-list" data-aclist="otrDestAddr" style="display:none;"></div></div></div>'
     +   '</div>'
     +   '<div class="row2" style="margin-top:8px;">'
     +     '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-otrfetch="1" type="button">◎ Fetch leg drive times</button></div>'
@@ -1712,12 +1712,12 @@ function vintageBodyHTML(trip){
   const v=VINTAGE[trip.vintageType]||VINTAGE.convertible;
   return ''
     + '<div class="row2">'
-    +   '<div><label style="margin-top:0;">Vintage vehicle</label><select data-f="vintageType">'+vintageTypeOpts(trip.vintageType)+'</select></div>'
     +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+    +   '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
     + '</div>'
     + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Service hours (1h min)</label><input type="number" data-f="vintageServiceHrs" value="'+trip.vintageServiceHrs+'" min="1" step="0.5"></div>'
-    +   '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+    +   '<div><label style="margin-top:0;">Vintage vehicle</label><select data-f="vintageType">'+vintageTypeOpts(trip.vintageType)+'</select></div>'
     + '</div>'
     + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Dead-head each way (min)</label><input type="number" data-f="vintageDeadheadMin" value="'+trip.vintageDeadheadMin+'" min="0"></div>'
@@ -1742,12 +1742,12 @@ function busBodyHTML(trip){
   const timeSel=(v)=>trip.busTimeOv===v?' selected':'';
   return ''
     + '<div class="row2">'
-    +   '<div><label style="margin-top:0;">Bus</label><select data-f="busType">'+busTypeOpts(trip.busType)+'</select></div>'
     +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+    +   '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
     + '</div>'
     + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Committed hours (min '+minH+'h)</label><input type="number" data-f="busHours" value="'+trip.busHours+'" min="0" step="0.5"></div>'
-    +   '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+    +   '<div><label style="margin-top:0;">Bus</label><select data-f="busType">'+busTypeOpts(trip.busType)+'</select></div>'
     + '</div>'
     + '<div class="bus-rate">Effective rate: <strong>$'+rate.toFixed(2)+'/hr</strong> = $'+b.base+' base × '+factor.toFixed(3)+' <span class="bus-factors">('+season+' · '+day+' · '+time+')</span></div>'
     + '<details class="drive-override"><summary>Demand factors (override auto)</summary>'
@@ -1855,21 +1855,20 @@ function standardFleetBodyHTML(trip){
   const billNote = k==='hourly'?'Hourly bills booked hours + round-trip dead-head.':(airport?'Airport bills service drive out + waived dead-head back.':'P2P bills the drive + round-trip waived dead-head.');
   return ''
     + '<div class="row2">'
-    +   '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOpts(trip.vehicle)+'</select></div>'
     +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
+    +   (k==='hourly'
+        ? '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
+        : hoursField)
     + '</div>'
-    + '<div class="row2" style="margin-top:10px;">'
-    +   hoursField
-    +   (k==='hourly' ? '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>' : '<div></div>')
-    + '</div>'
+    + (k==='hourly' ? '<div class="row2" style="margin-top:10px;">'+hoursField+'<div></div></div>' : '')
     + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">'+fromLbl+'</label>'+fromPicker+'</div>'
     +   '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
     + '</div>'
     + (k!=='hourly' ? stopsBlockHTML(trip) : '')
     + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOpts(trip.vehicle)+'</select></div>'
     +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
-    +   '<div></div>'
     + '</div>'
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
@@ -2297,9 +2296,15 @@ async function acSelect(trip, acField, pred){
     }
   }
   if(pred.saved){
-    // Saved LCV location: stored coords, zero API. The card re-render shows the name + note.
-    const L=resolveLoc(pred.savedKey);
-    setLoc(pred.savedKey, '', (L&&L.lat!=null)?{lat:L.lat,lng:L.lng}:null);
+    if(ctx.stopIdx==null && !ctx.keyField){
+      // Plain-text address field (e.g. OTR): write the venue's address so fetch-time geocoding works.
+      const a=AREAS[pred.savedKey]||{};
+      trip[ctx.addrField]=a.addr||a.name||'';
+    } else {
+      // Saved LCV location: stored coords, zero API. The card re-render shows the name + note.
+      const L=resolveLoc(pred.savedKey);
+      setLoc(pred.savedKey, '', (L&&L.lat!=null)?{lat:L.lat,lng:L.lng}:null);
+    }
     scheduleAutoFetch(trip);
   } else {
     setLoc(EXACT_KEY, pred.primary+(pred.secondary?(', '+pred.secondary):''), null);
