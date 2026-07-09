@@ -1249,6 +1249,47 @@ function locFieldHTML(keyField, addrField, keyVal, addrVal, stopIdx){
   return h;
 }
 
+// Hourly waits/standby rows — held time within the booked window (e.g. dinner hold 6–9).
+function waitsBlockHTML(trip){
+  const waits=trip.waits||[];
+  let h='<div class="waits-block">';
+  waits.forEach((w,i)=>{
+    h+='<div class="row3" style="margin-top:8px;align-items:end;">'
+      + '<div><label style="margin-top:0;">Wait / standby '+(i+1)+' — starts</label><input type="time" data-waitidx="'+i+'" data-waitfield="start" value="'+(w.start||'')+'"></div>'
+      + '<div><label style="margin-top:0;">Duration (h)</label><input type="number" data-waitidx="'+i+'" data-waitfield="hrs" value="'+(w.hrs!=null?w.hrs:1)+'" min="0" step="0.5"></div>'
+      + '<div><button class="addbtn ghost" type="button" data-waitdel="'+i+'" style="width:100%">Remove</button></div>'
+      + '</div>';
+  });
+  h+='<button class="addbtn" type="button" data-waitadd="1" style="margin-top:8px;">+ Add wait / standby</button>';
+  h+='</div>';
+  return h;
+}
+// Inline itinerary advice: window audit + gap-split recommendation from the REAL segments.
+function hourlyAdviceHTML(trip){
+  const chk=hourlyItineraryCheck(trip);
+  let h='<div data-hourlyadvice="1">';
+  chk.notes.forEach(n=>{ h+='<div class="tlc-item warn" style="margin-top:8px;">⚠ '+n+'</div>'; });
+  if(chk.fits===true) h+='<div class="tlc-item ok" style="margin-top:8px;">✓ Itinerary fits the booked window (~'+chk.requiredHrs.toFixed(1)+'h needed of '+chk.bookedHrs.toFixed(1)+'h booked).</div>';
+  const w=chk.biggestWait;
+  if(w && (+w.hrs||0)>0 && trip.time){
+    const seg1=timeSpanHrs(trip.time, w.start);
+    if(seg1!=null && seg1<chk.bookedHrs){
+      const gap=+w.hrs||0;
+      const seg2=Math.max(0, chk.bookedHrs-seg1-gap);
+      const dh=trip._hourlyDh?((trip._hourlyDh.legOut+trip._hourlyDh.legBack)/2)/60:0.33;
+      const res=gapSplitOptions({seg1Hrs:seg1, gapHrs:gap, seg2Hrs:seg2, minHrs:2, isStandby:false,
+        priceHours:(hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)), reuseDeadheadHrs:dh});
+      const th=res.opts.find(o=>o.key==='through'), sp=res.opts.find(o=>o.key==='split');
+      if(res.recommended==='split'){
+        h+='<div class="tlc-item warn" style="margin-top:8px;">⚠ The '+gap.toFixed(1)+'h wait is long enough to release the vehicle — splitting into two bookings ('+M(sp.price)+') beats billing through ('+M(th.price)+'). Consider quoting as two blocks.</div>';
+      } else if(sp) {
+        h+='<div class="tlc-item info" style="margin-top:8px;">• Wait bills through ('+M(th.price)+'): '+(sp.legal===false?'the vehicle stays committed during the '+gap.toFixed(1)+'h wait.':'splitting ('+M(sp.price)+') isn\'t cheaper.')+'</div>';
+      }
+    }
+  }
+  h+='</div>';
+  return h;
+}
 // Airports stay a dropdown — choosing among four terminals is faster than typing.
 // "Exact address" in the dropdown opens the unified autocomplete (FBOs, other airports).
 function airportFieldHTML(keyField, keyVal, addrField, addrVal){
@@ -1541,7 +1582,8 @@ function makeTrip(kind){
     otrTimeline:[ {label:'Day 1', driveHrs:3, onDutyHrs:5}, {label:'Day 2', driveHrs:8, onDutyHrs:11} ],
     otrSameDayArrival:true,
     fromKey:'none', toKey:'none',   // location dropdown selections
-    stops:[],                        // en-route stops: {key, addr, dwellMin} — P2P & airport
+    stops:[],                        // en-route stops: {key, addr, dwellMin} — P2P, airport & hourly itinerary
+    endTime:'', waits:[],            // hourly itinerary: end of booked window; waits [{start:'18:00', hrs:3}]
     fromAddr:'', toAddr:'',          // free-text exact addresses when key === '__exact__'
     driveStd:20, driveBusy:28,
     date:'', time:'14:00',
@@ -1569,6 +1611,11 @@ function makeTrip(kind){
 //   5. pass-throughs = flat reimbursements   (gate pass, tolls, parking — no markup)
 //   subtotal = base + gratuity − discount + holiday + pass-throughs
 function computeTrip(trip){
+  // Hourly: end time is authoritative for the booked window when present.
+  if(trip.kind==='hourly' && trip.endTime && trip.time){
+    const sp=timeSpanHrs(trip.time, trip.endTime);
+    if(sp!=null) trip.hours=sp;
+  }
   const p=priceTrip(trip);
   const base=p.base; // time-rate + late-night (or partner flat rate + greet)
   trip.base=base;
@@ -2005,16 +2052,21 @@ function standardFleetBodyHTML(trip){
         ? '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
         : hoursField)
     + '</div>'
-    + (k==='hourly' ? '<div class="row2" style="margin-top:10px;">'+hoursField+'<div></div></div>' : '')
+    + (k==='hourly' ? '<div class="row2" style="margin-top:10px;">'
+        + '<div><label style="margin-top:0;">End time</label><input type="time" data-f="endTime" value="'+(trip.endTime||addHrsToTime(trip.time,trip.hours))+'"></div>'
+        + hoursField
+        + '</div>' : '')
     + '<div class="row2" style="margin-top:10px;">'
     + '<div><label style="margin-top:0;">'+fromLbl+'</label>'+fromPicker+'</div>'
     + '<div></div>'
     + '</div>'
     + stopsBlockHTML(trip)
+    + (k==='hourly' ? waitsBlockHTML(trip) : '')
     + '<div class="row2" style="margin-top:10px;">'
     + '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
     + '<div></div>'
-    + '</div>' 
+    + '</div>'
+    + (k==='hourly' ? hourlyAdviceHTML(trip) : '')
     + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOpts(trip.vehicle)+'</select></div>'
     +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
@@ -2034,7 +2086,6 @@ function standardFleetBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Trip discount %</label><input type="number" data-f="discountPct" value="'+trip.discountPct+'" min="0" step="0.5"></div>'
     + '</div>'
     + '<div class="hint">'+billNote+' Click <strong>Live drive times</strong> to fill std/busy from Google (geocoded to the exact venue); the model prices on their median. Override manually if needed.</div>'
-    + (k==='hourly' ? gapPlannerHTML(trip, (hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)), 2) : '')
     + (k==='p2p' ? p2pPlannerHTML(trip, (hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)), 2) : '');
 }
 
@@ -2153,6 +2204,47 @@ function tripStartSpan(t){
   } else return null; // otr & internal trips are out of scope here
   if(span<=0) return null;
   return {startMin, spanHrs:span};
+}
+// ---- Hourly itinerary reasoning (pure functions — consumable by future AI agents) ----
+function addHrsToTime(start, hrs){
+  const m=(start||'').split(':').map(Number); if(isNaN(m[0])) return '';
+  let t=(m[0]+((m[1]||0)/60)+(+hrs||0))%24; if(t<0)t+=24;
+  const H=Math.floor(t), M=Math.round((t-H)*60);
+  return String(H).padStart(2,'0')+':'+String(M).padStart(2,'0');
+}
+function timeSpanHrs(start, end){
+  const p=t=>{const m=(t||'').split(':').map(Number); return isNaN(m[0])?null:m[0]+((m[1]||0)/60);};
+  const a=p(start), b=p(end);
+  if(a==null||b==null) return null;
+  let d=b-a; if(d<=0) d+=24; // overnight wrap
+  return Math.round(d*100)/100;
+}
+// Audits an hourly booking's itinerary against its booked window. Degrades gracefully:
+// with only start+hours it returns the window; locations/stops/waits tighten the check.
+function hourlyItineraryCheck(trip){
+  const booked=+trip.hours||0;
+  const out={bookedHrs:booked, driveHrs:0, dwellHrs:0, waitHrs:0, requiredHrs:null, fits:null, notes:[], biggestWait:null};
+  // waits
+  (trip.waits||[]).forEach(w=>{ out.waitHrs+=(+w.hrs||0); });
+  const waits=(trip.waits||[]).slice().sort((a,b)=>(+b.hrs||0)-(+a.hrs||0));
+  if(waits.length) out.biggestWait=waits[0];
+  // route estimate: pickup → stops → dropoff (coords chain at 30-mph planning speed)
+  const chain=[coordsOf(trip.fromKey,trip._fromGeo,trip.fromAddr)]
+    .concat((trip.stops||[]).map(st=>coordsOf(st.key,st._geo,st.addr)))
+    .concat([coordsOf(trip.toKey,trip._toGeo,trip.toAddr)])
+    .filter(Boolean);
+  if(chain.length>=2){
+    for(let i=0;i<chain.length-1;i++) out.driveHrs+=havMilesG(chain[i],chain[i+1])/30;
+    out.driveHrs=Math.round(out.driveHrs*100)/100;
+  }
+  (trip.stops||[]).forEach(st=>{ out.dwellHrs+=(+st.dwellMin||0)/60; });
+  out.dwellHrs=Math.round(out.dwellHrs*100)/100;
+  if(chain.length>=2 || out.waitHrs>0 || out.dwellHrs>0){
+    out.requiredHrs=Math.round((out.driveHrs+out.dwellHrs+out.waitHrs)*100)/100;
+    out.fits = booked>0 ? (out.requiredHrs <= booked+0.01) : null;
+    if(out.fits===false) out.notes.push('Itinerary needs ~'+out.requiredHrs.toFixed(1)+'h (drive '+out.driveHrs.toFixed(1)+' + stops '+out.dwellHrs.toFixed(1)+' + waits '+out.waitHrs.toFixed(1)+') but the booked window is '+booked.toFixed(1)+'h — extend the end time or trim the plan.');
+  }
+  return out;
 }
 function dayTimelineCheck(){
   // ==========================================================================
@@ -2396,6 +2488,21 @@ $('tripList').addEventListener('click',e=>{
     refreshSubtotalUI(trip); renderSummary();
     return;
   }
+  // Hourly waits: add / remove
+  const waitAdd=e.target.closest('[data-waitadd]');
+  const waitDel=e.target.closest('[data-waitdel]');
+  if(waitAdd||waitDel){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    if(!trip.waits) trip.waits=[];
+    if(waitAdd){ trip.waits.push({start:addHrsToTime(trip.time,2)||'18:00', hrs:2}); }
+    if(waitDel){ trip.waits.splice(+waitDel.dataset.waitdel,1); }
+    computeTrip(trip);
+    const body=card.querySelector('.trip-body');
+    if(body) body.innerHTML=tripBodyHTML(trip)+tripBreakdownHTML(trip);
+    refreshSubtotalUI(trip); renderSummary();
+    return;
+  }
   // OTR planner: apply a ranked option to the quote (days / nights / drivers / shuttle)
   const otrUse=e.target.closest('[data-otruse]');
   if(otrUse){
@@ -2511,6 +2618,18 @@ $('tripList').addEventListener('input',e=>{
     return;
   }
   // Autocomplete typing
+  // Hourly wait rows
+  if(e.target.dataset.waitidx!==undefined){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const wi=+e.target.dataset.waitidx, wf=e.target.dataset.waitfield;
+    if(!trip.waits||!trip.waits[wi]) return;
+    trip.waits[wi][wf]= (wf==='hrs') ? (+e.target.value||0) : e.target.value;
+    computeTrip(trip); refreshSubtotalUI(trip); renderSummary();
+    const adv=card.querySelector('[data-hourlyadvice]');
+    if(adv){ const fresh=document.createElement('div'); fresh.innerHTML=hourlyAdviceHTML(trip); adv.innerHTML=fresh.firstChild?fresh.firstChild.innerHTML:''; }
+    return;
+  }
   // Trip type switcher — change the card's service group in place
   if(e.target.dataset.tripgroup){
     const card=e.target.closest('[data-tid]'); if(!card) return;
@@ -2625,6 +2744,19 @@ $('tripList').addEventListener('input',e=>{
   const busStructural = trip.kind==='bus' && (f==='busType'||f==='date'||f==='time'||f==='busSeasonOv'||f==='busDayOv'||f==='busTimeOv');
   const vintageStructural = trip.kind==='vintage' && f==='vintageType';
   if(trip.kind==='otr' && f==='otrDays'){ trip.otrOvernights=Math.max(0,(+trip.otrDays||1)-1); }
+  if(trip.kind==='hourly' && (f==='hours'||f==='endTime'||f==='time')){
+    if(f==='hours'){ trip.endTime=addHrsToTime(trip.time, +trip.hours||0); }
+    else if(f==='endTime'){ const sp=timeSpanHrs(trip.time, trip.endTime); if(sp!=null) trip.hours=sp; }
+    else { if(trip.endTime){ const sp=timeSpanHrs(trip.time, trip.endTime); if(sp!=null) trip.hours=sp; } }
+    computeTrip(trip);
+    // sync the sibling inputs' displayed values without a rebuild (preserves focus)
+    const eEnd=card.querySelector('input[data-f="endTime"]'); if(eEnd&&f!=='endTime') eEnd.value=trip.endTime||'';
+    const eHrs=card.querySelector('input[data-f="hours"]'); if(eHrs&&f!=='hours') eHrs.value=trip.hours;
+    refreshSubtotalUI(trip); renderSummary();
+    const adv=card.querySelector('[data-hourlyadvice]');
+    if(adv){ const fresh=document.createElement('div'); fresh.innerHTML=hourlyAdviceHTML(trip); adv.innerHTML=fresh.firstChild?fresh.firstChild.innerHTML:''; }
+    return;
+  }
   const otrStructural = trip.kind==='otr' && (f==='otrDrivers'||f==='otrBus'||f==='otrSeason'||f==='date'||f==='otrDays');
   // Gap planner: keep it open; refresh just the options list (not the inputs) to preserve focus.
   if(f==='gapSeg1'||f==='gapGap'||f==='gapSeg2'||f==='gapStandby'||f==='gapDeadhead'){
