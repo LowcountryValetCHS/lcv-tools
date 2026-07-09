@@ -97,6 +97,9 @@
   .ac-item{padding:8px 11px;cursor:pointer;border-bottom:1px solid #f0ede4;}
   .ac-item:last-child{border-bottom:none;}
   .ac-item.active,.ac-item:hover{background:var(--marsh-light);}
+  .ac-item.saved{background:#f4f8f5;}
+  .ac-item.saved .ac-primary{color:#2f5d43;}
+  .ac-tag{font-size:9.5px;font-weight:700;background:#2f7d50;color:#fff;border-radius:3px;padding:1px 5px;margin-left:6px;vertical-align:1px;letter-spacing:.03em;}
   .ac-primary{font-size:13px;color:var(--ink);font-weight:600;}
   .ac-secondary{font-size:11px;color:var(--ink-soft);margin-top:1px;}
   .otr-legs{margin-top:12px;padding:11px;background:#fbfaf6;border:1px solid var(--line);border-radius:5px;}
@@ -1050,12 +1053,12 @@ const AIRPORTS={
 };
 const AREAS={
   none:{name:'— not set —'},
-  downtown:{name:'Downtown',lat:32.7765,lng:-79.9311},
-  mtp:{name:'Mt Pleasant',lat:32.8323,lng:-79.8284},
-  ji:{name:'James Island',lat:32.7327,lng:-79.9530},
-  wa:{name:'West Ashley',lat:32.7993,lng:-80.0118},
-  kiawah:{name:'Kiawah corridor',lat:32.6087,lng:-80.0850},
-  beaches:{name:'Beaches/IOP',lat:32.7866,lng:-79.7726},
+  downtown:{general:true, name:'Downtown',lat:32.7765,lng:-79.9311},
+  mtp:{general:true, name:'Mt Pleasant',lat:32.8323,lng:-79.8284},
+  ji:{general:true, name:'James Island',lat:32.7327,lng:-79.9530},
+  wa:{general:true, name:'West Ashley',lat:32.7993,lng:-80.0118},
+  kiawah:{general:true, name:'Kiawah corridor',lat:32.6087,lng:-80.0850},
+  beaches:{general:true, name:'Beaches/IOP',lat:32.7866,lng:-79.7726},
   lowndes:{name:'Lowndes Grove',addr:'266 St Margaret St, Charleston, SC 29403',lat:32.7967,lng:-79.9637,notes:'Long private drive off St Margaret St — allow a few extra minutes. Confirm event entrance vs. main house with the coordinator.'},
   magnolia:{name:'Magnolia Plantation',addr:'3550 Ashley River Rd, Charleston, SC 29414',lat:32.8780,lng:-80.0876,notes:'Gated entrance on Ashley River Rd; give the guest name to the gate. Pickups at the visitor center lot, not the house.'},
   boone:{name:'Boone Hall',addr:'1235 Long Point Rd, Mount Pleasant, SC 29464',lat:32.8444,lng:-79.8113},
@@ -1092,18 +1095,45 @@ function locNotes(key){ return (AREAS[key]&&AREAS[key].notes)||(AIRPORTS[key]&&A
 
 // Render a location field: dropdown (with "Exact address…" option), an address box when in exact mode,
 // and a venue-notes callout when a noted venue is selected.
-function locFieldHTML(keyField, addrField, keyVal, addrVal, optsFn){
-  let h='<select data-f="'+keyField+'">'+optsFn(keyVal)+'</select>';
-  if(keyVal===EXACT_KEY){
-    h+='<div class="ac-wrap" data-acwrap="'+addrField+'">'
-      + '<input type="text" data-f="'+addrField+'" data-ac="'+addrField+'" autocomplete="off" value="'+(addrVal||'').replace(/"/g,'&quot;')+'" placeholder="Start typing a venue or address…" style="margin-top:6px;width:100%;">'
-      + '<div class="ac-list" data-aclist="'+addrField+'" style="display:none;"></div>'
-      + '</div>';
-  } else {
-    const note=locNotes(keyVal);
-    if(note) h+='<div class="loc-note">📍 '+note+'</div>';
+// Saved LCV locations matching the typed text — pinned above Google predictions.
+function savedMatches(q){
+  q=(q||'').trim().toLowerCase();
+  if(q.length<2) return [];
+  const out=[];
+  for(const k in AREAS){
+    if(k==='none') continue;
+    const a=AREAS[k];
+    if(a.general) continue; // general areas: Places recognizes these natively — only operational venues stay saved
+    if((a.name||'').toLowerCase().includes(q)){
+      out.push({saved:true, savedKey:k, primary:a.name, secondary:'LCV saved'+(a.notes?' · pickup note':''), notes:a.notes||''});
+      if(out.length>=4) break;
+    }
   }
+  return out;
+}
+
+// UNIFIED LOCATION FIELD: one autocomplete input everywhere (exact-address behavior by
+// default). Suggestions blend saved LCV locations FIRST (zero-API selection using stored
+// coords; fires the pickup-note callout) then Google Places predictions.
+// stopIdx!=null → the field edits trip.stops[stopIdx] instead of trip[keyField/addrField].
+function locFieldHTML(keyField, addrField, keyVal, addrVal, stopIdx){
+  const isSaved = keyVal && keyVal!=='none' && keyVal!==EXACT_KEY && AREAS[keyVal];
+  const display = isSaved ? AREAS[keyVal].name : (addrVal||'');
+  const fid = stopIdx!=null ? 'stop'+stopIdx : addrField;
+  let h='<div class="ac-wrap" data-acwrap="'+fid+'">'
+    + '<input type="text" data-ac="'+fid+'" data-ackey="'+(keyField||'')+'" data-acaddr="'+(addrField||'')+'"'
+    + (stopIdx!=null?' data-acstop="'+stopIdx+'"':'')
+    + ' autocomplete="off" value="'+display.replace(/"/g,'&quot;')+'" placeholder="Type a venue, area, or address…" style="width:100%;">'
+    + '<div class="ac-list" data-aclist="'+fid+'" style="display:none;"></div>'
+    + '</div>';
+  const note=isSaved?locNotes(keyVal):'';
+  if(note) h+='<div class="loc-note">📍 '+note+'</div>';
   return h;
+}
+
+// Airports stay a dropdown — choosing among four terminals is faster than typing.
+function airportFieldHTML(keyField, keyVal){
+  return '<select data-f="'+keyField+'">'+airportOpts(keyVal)+'</select>';
 }
 
 async function geocodeLoc(loc){
@@ -1296,8 +1326,11 @@ async function refreshTripTimes(trip, statusEl){
     trip._fromGeo={lat:from.lat,lng:from.lng};
     trip._toGeo={lat:to.lat,lng:to.lng};
     // Resolve en-route stops → intermediates (route THROUGH them); skip unset stops
-    const stopLocs=(trip.stops||[]).map(st=>resolveLoc(st.key, st.addr)).filter(Boolean);
-    const stopGeos=await Promise.all(stopLocs.map(L=>geocodeLoc(L)));
+    const stopGeos=await Promise.all((trip.stops||[]).map(st=>{
+      if(st._geo&&st._geo.lat!=null) return Promise.resolve(st._geo); // locked by selection — zero API
+      const L=resolveLoc(st.key, st.addr);
+      return L?geocodeLoc(L):Promise.resolve(null);
+    }));
     const intermediates=stopGeos.filter(g=>g&&g.lat!=null);
     if(statusEl) statusEl.textContent='Fetching live drive times…';
     const dep=deptISOfor(trip);
@@ -1780,9 +1813,7 @@ function stopsBlockHTML(trip){
   let h='<div class="stops-block">';
   stops.forEach((st,i)=>{
     h+='<div class="row3" style="margin-top:8px;align-items:end;">'
-      + '<div><label style="margin-top:0;">Stop '+(i+1)+'</label><select data-stopidx="'+i+'" data-stopfield="key">'+locOpts(st.key)+'</select>'
-      + (st.key===EXACT_KEY ? '<input type="text" data-stopidx="'+i+'" data-stopfield="addr" value="'+(st.addr||'').replace(/"/g,'&quot;')+'" placeholder="Venue name or address" style="margin-top:6px;width:100%;">' : '')
-      + '</div>'
+      + '<div><label style="margin-top:0;">Stop '+(i+1)+'</label>'+locFieldHTML(null,null,st.key,st.addr,i)+'</div>'
       + '<div><label style="margin-top:0;">Est. stop time (min)</label><input type="number" data-stopidx="'+i+'" data-stopfield="dwellMin" value="'+(st.dwellMin!=null?st.dwellMin:STOP_INCLUDED_MIN)+'" min="0" step="5"></div>'
       + '<div><button class="addbtn ghost" type="button" data-stopdel="'+i+'" style="width:100%">Remove</button></div>'
       + '</div>';
@@ -1801,28 +1832,22 @@ function standardFleetBodyHTML(trip){
   if(isPartnerRouting(currentRouting()) && (isAirportKind(k)||k==='p2p'||k==='hourly')){
     return partnerBodyHTML(trip, k, currentRouting());
   }
-  // Normalize location keys so the STORED value matches the displayed default
-  // (fixes "pick both locations" when the dropdown shows a value the trip didn't hold).
+  // Airports default to CHS main (dropdown). Unified location fields start BLANK —
+  // exact-address-default: the agent types what the client says, no prefilled area to clear.
   if(k==='fromairport' && (!trip.fromKey || trip.fromKey==='none')) trip.fromKey='chs_main';
   if(k==='toairport' && (!trip.toKey || trip.toKey==='none')) trip.toKey='chs_main';
-  if(k==='fromairport' && (!trip.toKey || trip.toKey==='none')) trip.toKey='downtown';
-  if(k==='toairport' && (!trip.fromKey || trip.fromKey==='none')) trip.fromKey='downtown';
-  if((k==='p2p'||k==='hourly')){
-    if(!trip.fromKey || trip.fromKey==='none') trip.fromKey='downtown';
-    if(!trip.toKey || trip.toKey==='none') trip.toKey='mtp';
-  }
   if(k==='fromairport'){
-    fromLbl='Pickup (airport)'; toLbl='Dropoff (area)';
-    fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr,airportOpts);
-    toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr,locOpts);
+    fromLbl='Pickup (airport)'; toLbl='Dropoff';
+    fromPicker=airportFieldHTML('fromKey',trip.fromKey);
+    toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr);
   } else if(k==='toairport'){
-    fromLbl='Pickup (area)'; toLbl='Dropoff (airport)';
-    fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr,locOpts);
-    toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr,airportOpts);
+    fromLbl='Pickup'; toLbl='Dropoff (airport)';
+    fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr);
+    toPicker=airportFieldHTML('toKey',trip.toKey);
   } else { // p2p / hourly
-    fromLbl='Pickup / from (area)'; toLbl=(k==='hourly'?'Primary area':'Dropoff / to (area)');
-    fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr,locOpts);
-    toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr,locOpts);
+    fromLbl='Pickup / from'; toLbl=(k==='hourly'?'Primary location':'Dropoff / to');
+    fromPicker=locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr);
+    toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr);
   }
   const hoursField = (k==='hourly')
     ? '<div><label style="margin-top:0;">Booked hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
@@ -2248,8 +2273,8 @@ function renderAcList(addrField, preds, activeIdx){
   const list=acListEl(addrField); if(!list) return;
   if(!preds||!preds.length){ list.style.display='none'; list.innerHTML=''; return; }
   list.innerHTML=preds.map((p,i)=>
-    '<div class="ac-item'+(i===activeIdx?' active':'')+'" data-acidx="'+i+'">'
-    + '<div class="ac-primary">'+escapeHtml(p.primary)+'</div>'
+    '<div class="ac-item'+(p.saved?' saved':'')+(i===activeIdx?' active':'')+'" data-acidx="'+i+'">'
+    + '<div class="ac-primary">'+(p.saved?'📍 ':'')+escapeHtml(p.primary)+(p.saved?' <span class="ac-tag">LCV saved</span>':'')+'</div>'
     + (p.secondary?'<div class="ac-secondary">'+escapeHtml(p.secondary)+'</div>':'')
     + '</div>'
   ).join('');
@@ -2257,23 +2282,37 @@ function renderAcList(addrField, preds, activeIdx){
 }
 function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-async function acSelect(trip, addrField, pred){
-  const st=_acState[addrField]||{};
-  // store the typed/selected text and lock coords by place ID (no ambiguity)
-  const keyForGeo = addrField==='fromAddr' ? '_fromGeo' : addrField==='toAddr' ? '_toGeo' : null;
-  trip[addrField]=pred.primary+(pred.secondary?(', '+pred.secondary):'');
-  try{
-    const resolved=await resolvePlaceId(pred.placeId, st.token);
-    if(keyForGeo) trip[keyForGeo]={lat:resolved.lat,lng:resolved.lng};
-    trip[addrField]=resolved.formatted||trip[addrField];
-    // treat these inputs as ready; trigger a drive-time fetch using the locked coords
-    scheduleAutoFetch(trip);
-  }catch(err){
-    console.error('Place details failed:', err.message);
+async function acSelect(trip, acField, pred){
+  const st=_acState[acField]||{};
+  const ctx=st.ctx||{stopIdx:null, keyField:(acField==='fromAddr'?'fromKey':acField==='toAddr'?'toKey':''), addrField:acField};
+  function setLoc(key, addr, geo){
+    if(ctx.stopIdx!=null){
+      const s0=trip.stops&&trip.stops[ctx.stopIdx];
+      if(s0){ s0.key=key; s0.addr=addr; s0._geo=geo; }
+    } else {
+      if(ctx.keyField) trip[ctx.keyField]=key;
+      if(ctx.addrField) trip[ctx.addrField]=addr;
+      const geoField=ctx.addrField==='fromAddr'?'_fromGeo':ctx.addrField==='toAddr'?'_toGeo':null;
+      if(geoField) trip[geoField]=geo;
+    }
   }
-  _acState[addrField]={}; // end session
-  const list=acListEl(addrField); if(list){ list.style.display='none'; list.innerHTML=''; }
-  // reflect the chosen text in the input + re-render card so downstream (gate, etc.) updates
+  if(pred.saved){
+    // Saved LCV location: stored coords, zero API. The card re-render shows the name + note.
+    const L=resolveLoc(pred.savedKey);
+    setLoc(pred.savedKey, '', (L&&L.lat!=null)?{lat:L.lat,lng:L.lng}:null);
+    scheduleAutoFetch(trip);
+  } else {
+    setLoc(EXACT_KEY, pred.primary+(pred.secondary?(', '+pred.secondary):''), null);
+    try{
+      const resolved=await resolvePlaceId(pred.placeId, st.token);
+      setLoc(EXACT_KEY, resolved.formatted||(pred.primary), {lat:resolved.lat,lng:resolved.lng});
+      scheduleAutoFetch(trip);
+    }catch(err){
+      console.error('Place details failed:', err.message);
+    }
+  }
+  _acState[acField]={}; // end session
+  const list=acListEl(acField); if(list){ list.style.display='none'; list.innerHTML=''; }
   renderTrips(); renderSummary();
 }
 
@@ -2304,20 +2343,33 @@ $('tripList').addEventListener('input',e=>{
   if(acField){
     const card=e.target.closest('[data-tid]'); if(!card) return;
     const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
-    trip[acField]=e.target.value; // keep the raw text
-    trip[acField==='fromAddr'?'_fromGeo':'_toGeo']=null; // typing invalidates any locked coord
+    const stopIdx=e.target.dataset.acstop!==undefined ? +e.target.dataset.acstop : null;
+    const keyField=e.target.dataset.ackey||'', addrField=e.target.dataset.acaddr||'';
+    const v=e.target.value;
+    // Typing = exact-address behavior (the default). Selection upgrades to saved/place-locked.
+    if(stopIdx!=null){
+      const s0=trip.stops&&trip.stops[stopIdx]; if(!s0) return;
+      s0.addr=v; s0.key=EXACT_KEY; s0._geo=null;
+    } else {
+      trip[addrField]=v;
+      if(keyField) trip[keyField]=EXACT_KEY;
+      const geoField=addrField==='fromAddr'?'_fromGeo':addrField==='toAddr'?'_toGeo':null;
+      if(geoField) trip[geoField]=null;
+    }
     let st=_acState[acField]; if(!st){ st=_acState[acField]={}; }
+    st.ctx={stopIdx, keyField, addrField};
     if(!st.token) st.token=newSessionToken();
     st.active=-1;
     clearTimeout(st.timer);
-    const val=e.target.value;
     st.timer=setTimeout(async()=>{
-      if(!mapsReady()){ return; }
-      try{
-        const preds=await fetchPlacePredictions(val, st.token);
-        st.preds=preds;
-        renderAcList(acField, preds, -1);
-      }catch(err){ console.error('Autocomplete:', err.message); }
+      const saved=savedMatches(v);
+      let g=[];
+      if(mapsReady()){
+        try{ g=await fetchPlacePredictions(v, st.token); }
+        catch(err){ console.error('Autocomplete:', err.message); }
+      }
+      st.preds=saved.concat(g);
+      renderAcList(acField, st.preds, -1);
     }, 250);
     return; // don't fall through to the generic field handler
   }
