@@ -239,6 +239,16 @@ const M=n=>'$'+Math.round(n).toLocaleString();
 // ============================================================================
 const STD={ sedan:{floor:120,r2:95,r4:95,name:'Luxury Sedan'}, fsuv:{floor:140,r2:120,r4:120,name:'Full Size SUV'},
   vsuv:{floor:150,r2:130,r4:130,name:'VIP SUV'}, svan:{floor:220,r2:190,r4:175,name:'Sprinter Van'}, slimo:{floor:300,r2:200,r4:185,name:'Sprinter Limo'} };
+// Retail pricing uplift — experiment knob: standard-fleet retail rates & floors × this.
+// Reverted to 1.0 (Jul 2026): replaced by the pricing percentile + dead-head grace taper below.
+const RETAIL_UPLIFT=1.0;
+// Drive-time pricing percentile — where between best (std, 0.5 floor) and worst (busy, 1.0)
+// the priced drive time sits. Median gives away traffic risk; clamped to [0.5, 1.0].
+const PRICING_PERCENTILE=0.75;
+// Dead-head grace taper: short trips get the full 15-min/leg waiver (return legs usually
+// rebook near town); far trips get none (the car comes home empty). Grace phases linearly
+// from full at ≤60 total drive minutes (out + back) to zero at ≥90.
+const DH_GRACE_MIN=15, DH_GRACE_FULL_TOTAL=60, DH_GRACE_ZERO_TOTAL=90;
 const WAIT_RATE={sedan:30,fsuv:30,vsuv:30,svan:50,slimo:50}; // $ per 15-min wait increment (spec 7.3)
 const STOP_INCLUDED_MIN=10, STOP_INCR_MIN=15; // en-route stops: 10 min built in, overage in 15-min increments
 const GREETER_RATE=50, GREETER_MIN_HRS=3, GREETER_SETUP_HRS=1; // $50/hr, 3hr min, +20% grat; 1h setup/prep added to greeting hours
@@ -907,17 +917,22 @@ function priceTrip(trip){
   // ---- STANDARD FLEET: From/To Airport + P2P + Hourly ----
   const veh=trip.vehicle||'sedan';
   const std=+trip.driveStd||0, busy=+trip.driveBusy||0;
-  const median=(std+busy)/2;
+  const P=Math.min(1,Math.max(0.5,PRICING_PERCENTILE));
+  const median=std+(busy-std)*P; // priced drive value at the pricing percentile (keeps the name for downstream users)
   const airport=isAirportKind(k);
   // En-route stops apply ONLY to airport & P2P — the gate must govern both the billed
   // minutes AND the dead-head basis switch (an hourly trip must never switch basis).
   const stops=(airport||k==='p2p') ? (trip.stops||[]) : [];
   // Dead-head proxy: with en-route stops, the empty legs follow the DIRECT route —
-  // use the direct pickup→dropoff median when available so the detour isn't triple-counted.
+  // use the direct pickup→dropoff time when available so the detour isn't triple-counted.
   const dhMedian=(stops.length>0 && trip.driveDirectStd!=null)
-    ? ((+trip.driveDirectStd)+(+trip.driveDirectBusy||+trip.driveDirectStd))/2
+    ? ((+trip.driveDirectStd)+((+trip.driveDirectBusy||+trip.driveDirectStd)-(+trip.driveDirectStd))*P)
     : median;
-  const waived=Math.max(0,dhMedian-15);
+  // Grace taper: full DH_GRACE_MIN at ≤60 total drive minutes (out + back), zero at ≥90.
+  const totalDrive=2*dhMedian;
+  const graceFrac=Math.min(1,Math.max(0,(DH_GRACE_ZERO_TOTAL-totalDrive)/(DH_GRACE_ZERO_TOTAL-DH_GRACE_FULL_TOTAL)));
+  const grace=DH_GRACE_MIN*graceFrac;
+  const waived=Math.max(0,dhMedian-grace);
   let billHours;
   if(airport){
     billHours=(median/60)+(waived/60);                 // service drive out + waived dead-head back
@@ -927,8 +942,8 @@ function priceTrip(trip){
     billHours=(median/60)+(waived/60)*2;               // service drive + round-trip waived dead-head
   }
   if(stops.length){ billHours += stops.length*STOP_INCLUDED_MIN/60; }
-  const rate=tierRate(veh,billHours);
-  const floor=STD[veh]?STD[veh].floor:0;
+  const rate=Math.round(tierRate(veh,billHours)*RETAIL_UPLIFT*100)/100;
+  const floor=STD[veh]?Math.round(STD[veh].floor*RETAIL_UPLIFT*100)/100:0;
   const minHrs=airport?0.75:2;
   const billedHrs=Math.max(billHours,minHrs);
   const timeCalc=billedHrs*rate;
@@ -1814,9 +1829,6 @@ function standardFleetBodyHTML(trip){
   const hoursField = (k==='hourly')
     ? '<div><label style="margin-top:0;">Booked hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
     : '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>';
-  const hourlyTimeRow = (k==='hourly')
-    ? '<div class="row2" style="margin-top:10px;"><div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div><div></div></div>'
-    : '';
   const billNote = k==='hourly'?'Hourly bills booked hours + round-trip dead-head.':(airport?'Airport bills service drive out + waived dead-head back.':'P2P bills the drive + round-trip waived dead-head.');
   return ''
     + '<div class="row2">'
@@ -1824,15 +1836,18 @@ function standardFleetBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Service date</label><input type="date" data-f="date" value="'+trip.date+'"></div>'
     + '</div>'
     + '<div class="row2" style="margin-top:10px;">'
+    +   hoursField
+    +   (k==='hourly' ? '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>' : '<div></div>')
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">'+fromLbl+'</label>'+fromPicker+'</div>'
     +   '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
     + '</div>'
     + (k!=='hourly' ? stopsBlockHTML(trip) : '')
     + '<div class="row2" style="margin-top:10px;">'
-    +   hoursField
     +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
+    +   '<div></div>'
     + '</div>'
-    + hourlyTimeRow
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '')
