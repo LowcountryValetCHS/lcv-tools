@@ -976,9 +976,20 @@ function priceTrip(trip){
     factor = Math.max(factor, BUS_FLOOR);
     const rate = b.base*factor;
     const minH = busMinHours(season, day, time);
-    const reqH = +trip.busHours||0;
+    // With locations: committed = booked window + FULL yard dead-head legs (no grace —
+    // buses bill the whole span). Without locations: entered hours = committed (legacy).
+    const bpc=coordsOf(trip.fromKey, trip._fromGeo, trip.fromAddr);
+    const bdc=coordsOf(trip.toKey, trip._toGeo, trip.toAddr);
+    let reqH = +trip.busHours||0;
+    if(bpc||bdc){
+      const legOut=bpc?Math.round(havMilesG(OTR_YARD,bpc)/30*60):0;
+      const legBack=bdc?Math.round(havMilesG(bdc,OTR_YARD)/30*60):0;
+      trip._busDh={legOut,legBack};
+      reqH += (legOut+legBack)/60;
+    } else trip._busDh=null;
     const hrs = Math.max(minH, reqH);
     const base = rate*hrs;
+    if(trip._busDh) lines.push({lbl:'Yard dead-head: yard→pickup '+trip._busDh.legOut+'min + dropoff→yard '+trip._busDh.legBack+'min (billed in full — buses bill the whole span)', val:null, txt:'', sub:true});
     lines.push({lbl:'Committed hrs', val:null, txt:reqH.toFixed(1)+(hrs>reqH?' → '+hrs.toFixed(1)+' (min)':''), sub:true});
     lines.push({lbl:'Effective rate ($'+b.base+' × '+factor.toFixed(3)+' = $'+rate.toFixed(2)+'/hr)', val:null, txt:season+'/'+day+'/'+time, sub:true});
     lines.push({lbl:'Base ('+hrs.toFixed(1)+'h × $'+rate.toFixed(2)+')', val:base});
@@ -1261,32 +1272,6 @@ function waitsBlockHTML(trip){
       + '</div>';
   });
   h+='<button class="addbtn" type="button" data-waitadd="1" style="margin-top:8px;">+ Add wait / standby</button>';
-  h+='</div>';
-  return h;
-}
-// Inline itinerary advice: window audit + gap-split recommendation from the REAL segments.
-function hourlyAdviceHTML(trip){
-  const chk=hourlyItineraryCheck(trip);
-  let h='<div data-hourlyadvice="1">';
-  chk.notes.forEach(n=>{ h+='<div class="tlc-item warn" style="margin-top:8px;">⚠ '+n+'</div>'; });
-  if(chk.fits===true) h+='<div class="tlc-item ok" style="margin-top:8px;">✓ Itinerary fits the booked window (~'+chk.requiredHrs.toFixed(1)+'h needed of '+chk.bookedHrs.toFixed(1)+'h booked).</div>';
-  const w=chk.biggestWait;
-  if(w && (+w.hrs||0)>0 && trip.time){
-    const seg1=timeSpanHrs(trip.time, w.start);
-    if(seg1!=null && seg1<chk.bookedHrs){
-      const gap=+w.hrs||0;
-      const seg2=Math.max(0, chk.bookedHrs-seg1-gap);
-      const dh=trip._hourlyDh?((trip._hourlyDh.legOut+trip._hourlyDh.legBack)/2)/60:0.33;
-      const res=gapSplitOptions({seg1Hrs:seg1, gapHrs:gap, seg2Hrs:seg2, minHrs:2, isStandby:false,
-        priceHours:(hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)), reuseDeadheadHrs:dh});
-      const th=res.opts.find(o=>o.key==='through'), sp=res.opts.find(o=>o.key==='split');
-      if(res.recommended==='split'){
-        h+='<div class="tlc-item warn" style="margin-top:8px;">⚠ The '+gap.toFixed(1)+'h wait is long enough to release the vehicle — splitting into two bookings ('+M(sp.price)+') beats billing through ('+M(th.price)+'). Consider quoting as two blocks.</div>';
-      } else if(sp) {
-        h+='<div class="tlc-item info" style="margin-top:8px;">• Wait bills through ('+M(th.price)+'): '+(sp.legal===false?'the vehicle stays committed during the '+gap.toFixed(1)+'h wait.':'splitting ('+M(sp.price)+') isn\'t cheaper.')+'</div>';
-      }
-    }
-  }
   h+='</div>';
   return h;
 }
@@ -1616,6 +1601,10 @@ function computeTrip(trip){
     const sp=timeSpanHrs(trip.time, trip.endTime);
     if(sp!=null) trip.hours=sp;
   }
+  if(trip.kind==='bus' && trip.endTime && trip.time){
+    const sp=timeSpanHrs(trip.time, trip.endTime);
+    if(sp!=null) trip.busHours=sp;
+  }
   const p=priceTrip(trip);
   const base=p.base; // time-rate + late-night (or partner flat rate + greet)
   trip.base=base;
@@ -1900,6 +1889,21 @@ function vintageBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Vintage vehicle</label><select data-f="vintageType">'+vintageTypeOpts(trip.vintageType)+'</select></div>'
     + '</div>'
     + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">First pickup</label>'+locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr)+'</div>'
+    +   '<div></div>'
+    + '</div>'
+    + stopsBlockHTML(trip)
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Final dropoff</label>'+locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr)+'</div>'
+    +   '<div></div>'
+    + '</div>'
+    + (function(){
+        const vc=coordsOf(trip.fromKey,trip._fromGeo,trip.fromAddr), vd=coordsOf(trip.toKey,trip._toGeo,trip.toAddr);
+        if(!vc&&!vd) return '';
+        const lo=vc?Math.round(havMilesG(OTR_YARD,vc)/30*60):0, lb=vd?Math.round(havMilesG(vd,OTR_YARD)/30*60):0;
+        return '<div class="hint" style="margin-top:6px;">≈ '+(lo+lb)+' min yard dead-head from these locations (yard→pickup '+lo+' + dropoff→yard '+lb+', planning estimate) — compare with the dead-head minutes entered above.</div>';
+      })()
+    + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Dead-head each way (min)</label><input type="number" data-f="vintageDeadheadMin" value="'+trip.vintageDeadheadMin+'" min="0"></div>'
     +   '<div><label style="margin-top:0;">Non-consecutive hrs (1h min/block)</label><input type="number" data-f="vintageNonconsecHrs" value="'+trip.vintageNonconsecHrs+'" min="0" step="0.5"></div>'
     + '</div>'
@@ -1908,15 +1912,56 @@ function vintageBodyHTML(trip){
 }
 
 function busTypeOpts(sel){ return Object.keys(BUSES).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+BUSES[k].name+'</option>').join(''); }
-function busBodyHTML(trip){
+// Effective bus demand rate for a trip (season × day × time, floored) — shared by the
+// card, the pricing, and the itinerary advice.
+function busEffRate(trip){
   const d=trip.date?new Date(trip.date+'T00:00:00'):null;
   const season = trip.busSeasonOv || (d?busSeasonOf(d.getMonth()):'peak');
   const day    = trip.busDayOv    || (d?busDayOf(d.getDay()):'sat');
   const time   = trip.busTimeOv   || busTimeOf(trip.time);
   const b=BUSES[trip.busType]||BUSES.mc4957;
-  let factor=Math.max(BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time], BUS_FLOOR);
-  const rate=b.base*factor;
-  const minH=busMinHours(season,day,time);
+  const factor=Math.max(BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time], BUS_FLOOR);
+  return { rate:b.base*factor, minH:busMinHours(season,day,time), season, day, time, factor, base:b.base };
+}
+// Generalized itinerary advice — hourly (STD tier, base-relative dh) and bus (demand rate,
+// yard-relative dh). Window audit + §11.8 gap-split on the largest wait, from real segments.
+function tripAdviceHTML(trip){
+  let booked, priceFn, dhHrs, minHrs;
+  if(trip.kind==='bus'){
+    const er=busEffRate(trip);
+    booked=+trip.busHours||0; priceFn=(hrs)=>er.rate*hrs; minHrs=er.minH;
+    dhHrs=trip._busDh?((trip._busDh.legOut+trip._busDh.legBack)/2)/60:0.5;
+  } else {
+    booked=+trip.hours||0;
+    priceFn=(hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)); minHrs=2;
+    dhHrs=trip._hourlyDh?((trip._hourlyDh.legOut+trip._hourlyDh.legBack)/2)/60:0.33;
+  }
+  const chk=hourlyItineraryCheck(trip, booked);
+  let h='<div data-hourlyadvice="1">';
+  chk.notes.forEach(n=>{ h+='<div class="tlc-item warn" style="margin-top:8px;">⚠ '+n+'</div>'; });
+  if(chk.fits===true) h+='<div class="tlc-item ok" style="margin-top:8px;">✓ Itinerary fits the booked window (~'+chk.requiredHrs.toFixed(1)+'h needed of '+chk.bookedHrs.toFixed(1)+'h booked).</div>';
+  const w=chk.biggestWait;
+  if(w && (+w.hrs||0)>0 && trip.time){
+    const seg1=timeSpanHrs(trip.time, w.start);
+    if(seg1!=null && seg1<chk.bookedHrs){
+      const gap=+w.hrs||0;
+      const seg2=Math.max(0, chk.bookedHrs-seg1-gap);
+      const res=gapSplitOptions({seg1Hrs:seg1, gapHrs:gap, seg2Hrs:seg2, minHrs:minHrs, isStandby:false, priceHours:priceFn, reuseDeadheadHrs:dhHrs});
+      const th=res.opts.find(o=>o.key==='through'), sp=res.opts.find(o=>o.key==='split');
+      if(res.recommended==='split'){
+        h+='<div class="tlc-item warn" style="margin-top:8px;">⚠ The '+gap.toFixed(1)+'h wait is long enough to release the vehicle — splitting into two bookings ('+M(sp.price)+') beats billing through ('+M(th.price)+'). Consider quoting as two blocks.</div>';
+      } else if(sp) {
+        h+='<div class="tlc-item info" style="margin-top:8px;">• Wait bills through ('+M(th.price)+'): '+(sp.legal===false?'the vehicle stays committed during the '+gap.toFixed(1)+'h wait.':'splitting ('+M(sp.price)+') isn\'t cheaper.')+'</div>';
+      }
+    }
+  }
+  h+='</div>';
+  return h;
+}
+function busBodyHTML(trip){
+  const er=busEffRate(trip);
+  const season=er.season, day=er.day, time=er.time, rate=er.rate, minH=er.minH;
+  const factor=er.factor, b={base:er.base, name:(BUSES[trip.busType]||BUSES.mc4957).name};
   const seasonSel=(v)=>trip.busSeasonOv===v?' selected':'';
   const daySel=(v)=>trip.busDayOv===v?' selected':'';
   const timeSel=(v)=>trip.busTimeOv===v?' selected':'';
@@ -1926,9 +1971,20 @@ function busBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Start time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
     + '</div>'
     + '<div class="row2" style="margin-top:10px;">'
-    +   '<div><label style="margin-top:0;">Committed hours (min '+minH+'h)</label><input type="number" data-f="busHours" value="'+trip.busHours+'" min="0" step="0.5"></div>'
+    +   '<div><label style="margin-top:0;">End time</label><input type="time" data-f="endTime" value="'+(trip.endTime||addHrsToTime(trip.time,trip.busHours))+'"></div>'
+    +   '<div><label style="margin-top:0;">Booked hours (service window; min '+minH+'h)</label><input type="number" data-f="busHours" value="'+trip.busHours+'" min="1" step="0.5"></div>'
+    + '</div>'
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">First pickup</label>'+locFieldHTML('fromKey','fromAddr',trip.fromKey,trip.fromAddr)+'</div>'
+    +   '<div></div>'
+    + '</div>'
+    + stopsBlockHTML(trip)
+    + waitsBlockHTML(trip)
+    + '<div class="row2" style="margin-top:10px;">'
+    +   '<div><label style="margin-top:0;">Final dropoff (end of booked hours)</label>'+locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr)+'</div>'
     +   '<div><label style="margin-top:0;">Bus</label><select data-f="busType">'+busTypeOpts(trip.busType)+'</select></div>'
     + '</div>'
+    + tripAdviceHTML(trip)
     + '<div class="bus-rate">Effective rate: <strong>$'+rate.toFixed(2)+'/hr</strong> = $'+b.base+' base × '+factor.toFixed(3)+' <span class="bus-factors">('+season+' · '+day+' · '+time+')</span></div>'
     + '<details class="drive-override"><summary>Demand factors (override auto)</summary>'
     +   '<div class="row3" style="margin-top:8px;">'
@@ -1940,8 +1996,7 @@ function busBodyHTML(trip){
     + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
-        : '')
-    + gapPlannerHTML(trip, (hrs)=>rate*hrs, minH);
+        : '');
 }
 
 // The hourly "family" — one entry point, sub-typed on the card. Each still maps to its own LA type.
@@ -1980,7 +2035,7 @@ function tripBodyHTML(trip){
     if(k==='bus') return sel+busBodyHTML(trip);
     if(k==='greeter') return sel
       + '<div class="row2" style="margin-top:10px;">'
-      +   '<div><label style="margin-top:0;">Greeting hours (active)</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
+      +   '<div><label style="margin-top:0;">Greeting hours (active)</label><input type="number" data-f="hours" value="'+trip.hours+'" min="1" step="0.5"></div>'
       +   '<div><label style="margin-top:0;">Gratuity %</label><input type="number" data-f="gratuityPct" value="'+trip.gratuityPct+'" min="0" step="0.5"></div>'
       + '</div>'
       + '<div class="hint">$50/hr, +20% gratuity. Enter the <strong>active greeting hours</strong>; a <strong>1-hour setup/prep hour is added automatically</strong> (arrive, get settled, message arriving guests and coordinating chauffeurs). 3-hour minimum is the floor. Offered when a client has several airport arrivals, or auto-added for meet-and-greets on larger-than-SUV vehicles.</div>';
@@ -2042,7 +2097,7 @@ function standardFleetBodyHTML(trip){
     toPicker=locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr);
   }
   const hoursField = (k==='hourly')
-    ? '<div><label style="margin-top:0;">Booked hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="0" step="0.5"></div>'
+    ? '<div><label style="margin-top:0;">Booked hours</label><input type="number" data-f="hours" value="'+trip.hours+'" min="1" step="0.5"></div>'
     : '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>';
   const billNote = k==='hourly'?'Hourly bills booked hours (first pickup → final dropoff) + dead-head from the Charleston base to the pickup and back from the dropoff (15-min grace per leg).':(airport?'Airport bills service drive out + waived dead-head back.':'P2P bills the drive + round-trip waived dead-head.');
   return ''
@@ -2066,7 +2121,7 @@ function standardFleetBodyHTML(trip){
     + '<div><label style="margin-top:0;">'+toLbl+'</label>'+toPicker+'</div>'
     + '<div></div>'
     + '</div>'
-    + (k==='hourly' ? hourlyAdviceHTML(trip) : '')
+    + (k==='hourly' ? tripAdviceHTML(trip) : '')
     + '<div class="row2" style="margin-top:10px;">'
     +   '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOpts(trip.vehicle)+'</select></div>'
     +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
@@ -2221,8 +2276,8 @@ function timeSpanHrs(start, end){
 }
 // Audits an hourly booking's itinerary against its booked window. Degrades gracefully:
 // with only start+hours it returns the window; locations/stops/waits tighten the check.
-function hourlyItineraryCheck(trip){
-  const booked=+trip.hours||0;
+function hourlyItineraryCheck(trip, bookedOverride){
+  const booked=(bookedOverride!=null)?+bookedOverride:(+trip.hours||0);
   const out={bookedHrs:booked, driveHrs:0, dwellHrs:0, waitHrs:0, requiredHrs:null, fits:null, notes:[], biggestWait:null};
   // waits
   (trip.waits||[]).forEach(w=>{ out.waitHrs+=(+w.hrs||0); });
@@ -2627,7 +2682,7 @@ $('tripList').addEventListener('input',e=>{
     trip.waits[wi][wf]= (wf==='hrs') ? (+e.target.value||0) : e.target.value;
     computeTrip(trip); refreshSubtotalUI(trip); renderSummary();
     const adv=card.querySelector('[data-hourlyadvice]');
-    if(adv){ const fresh=document.createElement('div'); fresh.innerHTML=hourlyAdviceHTML(trip); adv.innerHTML=fresh.firstChild?fresh.firstChild.innerHTML:''; }
+    if(adv){ const fresh=document.createElement('div'); fresh.innerHTML=tripAdviceHTML(trip); adv.innerHTML=fresh.firstChild?fresh.firstChild.innerHTML:''; }
     return;
   }
   // Trip type switcher — change the card's service group in place
@@ -2744,17 +2799,18 @@ $('tripList').addEventListener('input',e=>{
   const busStructural = trip.kind==='bus' && (f==='busType'||f==='date'||f==='time'||f==='busSeasonOv'||f==='busDayOv'||f==='busTimeOv');
   const vintageStructural = trip.kind==='vintage' && f==='vintageType';
   if(trip.kind==='otr' && f==='otrDays'){ trip.otrOvernights=Math.max(0,(+trip.otrDays||1)-1); }
-  if(trip.kind==='hourly' && (f==='hours'||f==='endTime'||f==='time')){
-    if(f==='hours'){ trip.endTime=addHrsToTime(trip.time, +trip.hours||0); }
-    else if(f==='endTime'){ const sp=timeSpanHrs(trip.time, trip.endTime); if(sp!=null) trip.hours=sp; }
-    else { if(trip.endTime){ const sp=timeSpanHrs(trip.time, trip.endTime); if(sp!=null) trip.hours=sp; } }
+  if((trip.kind==='hourly' && (f==='hours'||f==='endTime'||f==='time')) || (trip.kind==='bus' && (f==='busHours'||f==='endTime'||f==='time'))){
+    const hrsField = trip.kind==='bus' ? 'busHours' : 'hours';
+    if(f==='hours'||f==='busHours'){ trip.endTime=addHrsToTime(trip.time, +trip[hrsField]||0); }
+    else if(f==='endTime'){ const sp=timeSpanHrs(trip.time, trip.endTime); if(sp!=null) trip[hrsField]=sp; }
+    else { if(trip.endTime){ const sp=timeSpanHrs(trip.time, trip.endTime); if(sp!=null) trip[hrsField]=sp; } }
     computeTrip(trip);
     // sync the sibling inputs' displayed values without a rebuild (preserves focus)
     const eEnd=card.querySelector('input[data-f="endTime"]'); if(eEnd&&f!=='endTime') eEnd.value=trip.endTime||'';
-    const eHrs=card.querySelector('input[data-f="hours"]'); if(eHrs&&f!=='hours') eHrs.value=trip.hours;
+    const eHrs=card.querySelector('input[data-f="'+hrsField+'"]'); if(eHrs&&f!==hrsField) eHrs.value=trip[hrsField];
     refreshSubtotalUI(trip); renderSummary();
     const adv=card.querySelector('[data-hourlyadvice]');
-    if(adv){ const fresh=document.createElement('div'); fresh.innerHTML=hourlyAdviceHTML(trip); adv.innerHTML=fresh.firstChild?fresh.firstChild.innerHTML:''; }
+    if(adv){ const fresh=document.createElement('div'); fresh.innerHTML=tripAdviceHTML(trip); adv.innerHTML=fresh.firstChild?fresh.firstChild.innerHTML:''; }
     return;
   }
   const otrStructural = trip.kind==='otr' && (f==='otrDrivers'||f==='otrBus'||f==='otrSeason'||f==='date'||f==='otrDays');
