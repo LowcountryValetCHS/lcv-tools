@@ -1054,16 +1054,18 @@ function priceTrip(trip){
     if(bpc||bdc){
       const legOut=bpc?Math.round(havMilesG(OTR_YARD,bpc)/30*60):0;
       const legBack=bdc?Math.round(havMilesG(bdc,OTR_YARD)/30*60):0;
-      // Approved bus streets downtown (see ensureBusRoutes); skipped when the city approved a special route.
+      // Approved bus streets downtown (see ensureBusRoutes): PLANNING ONLY on the empty legs (when to leave),
+      // not billed (Jeffrey, Nov 1, 2026: timing changes the price only if the reservation itself gets longer;
+      // a bus trip here is priced by its booked hours). Skipped when the city approved a special route.
       const br=(!trip.busSpecialRoute && trip._busRoute && trip._busRoute.status==='ok') ? trip._busRoute : null;
       const addOut=br&&bpc?br.out:0, addBack=br&&bdc?br.back:0;
-      trip._busDh={legOut:legOut+addOut,legBack:legBack+addBack,addOut,addBack};
-      reqH += (legOut+legBack+addOut+addBack)/60;
+      trip._busDh={legOut,legBack,addOut,addBack};
+      reqH += (legOut+legBack)/60;
     } else trip._busDh=null;
     const hrs = Math.max(minH, reqH);
     const base = rate*hrs;
     if(trip._busDh) lines.push({lbl:'Yard dead-head: yard→pickup '+trip._busDh.legOut+'min + dropoff→yard '+trip._busDh.legBack+'min (billed in full — buses bill the whole span)', val:null, txt:'', sub:true});
-    if(trip._busDh && (trip._busDh.addOut||trip._busDh.addBack)) lines.push({lbl:'Approved bus streets downtown: +'+Math.round((trip._busDh.addOut+trip._busDh.addBack)*10)/10+' min (city motorcoach routes; included above)', val:null, txt:'', sub:true});
+    if(trip._busDh && (trip._busDh.addOut||trip._busDh.addBack)) lines.push({lbl:'Planning: approved bus streets downtown add '+(trip._busDh.addOut?Math.round(trip._busDh.addOut*10)/10+' min getting in (leave that much earlier)':'')+(trip._busDh.addOut&&trip._busDh.addBack?' and ':'')+(trip._busDh.addBack?Math.round(trip._busDh.addBack*10)/10+' min getting out':'')+' (city motorcoach routes; not billed)', val:null, txt:'', sub:true});
     else if(trip.busSpecialRoute) lines.push({lbl:'City approved a special route: downtown legs timed by the normal route', val:null, txt:'', sub:true});
     else if(trip._busRoute && trip._busRoute.status==='pending') lines.push({lbl:'Checking the city\'s approved bus streets…', val:null, txt:'', sub:true});
     else if(trip._busRoute && trip._busRoute.status==='error') lines.push({lbl:'City bus route lookup failed: downtown legs not adjusted for approved streets', val:null, txt:'', sub:true});
@@ -2074,7 +2076,7 @@ function busBodyHTML(trip){
     +   '</div>'
     + '</details>'
     + '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="busSpecialRoute"'+(trip.busSpecialRoute?' checked':'')+'><label>City approved a special route (time downtown legs by the normal route, not the approved bus streets)</label></div>'
-    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. Downtown bus permit $14 when a pickup, stop or drop-off is in the Old and Historic District; dead-head legs into the district follow the city\'s approved bus streets. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
+    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. Downtown bus permit $14 when a pickup, stop or drop-off is in the Old and Historic District; the city\'s approved bus streets show as planning time on the legs in and out (not billed). The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '');
