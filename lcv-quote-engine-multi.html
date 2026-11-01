@@ -817,14 +817,14 @@ function pricePartner(trip, k, partnerKey){
       destName=(k==='hourly'?'Hourly':'P2P→hourly')+' '+hrs+'h';
       lines.push({lbl:'GCT hourly ('+hrs+'h × $'+rate+' · '+vehLabel(veh)+')', val:base, sub:true});
     }
-    // inside-airport greet ($25 to base, sedans/SUVs)
+    // inside-airport greet: a flat $25 add-on OUTSIDE the base (no gratuity/holiday/discount), sedans/SUVs
+    const gctPass=[];
     if(isAirportKind(k) && trip.meetGreet && (veh==='sedan'||veh==='fsuv'||veh==='vsuv')){
-      base+=DEW_MEET_GREET;
-      lines.push({lbl:'Inside-airport greet (service add-on)', val:DEW_MEET_GREET, sub:true});
+      gctPass.push({label:'Inside-airport greet (flat $25, no gratuity)', amount:DEW_MEET_GREET, auto:true});
     }
     const holidayName=holidayOf(trip.date);
     const holidayPct = holidayName ? 0.30 : 0;
-    return {base, lines, note:'GCT · '+destName, holidayPct, holidayName, passthroughs:[],
+    return {base, lines, note:'GCT · '+destName, holidayPct, holidayName, passthroughs:gctPass,
             partner:partnerKey, partnerGratPct:P.gratPct, partnerDiscPct:P.discPct};
   }
 
@@ -853,12 +853,9 @@ function pricePartner(trip, k, partnerKey){
     }
   }
 
-  // MEET & GREET (inside-airport greet) — a SERVICE add-on, $25 added to BASE (not a pass-through).
-  // Airport pickups only, sedans/SUVs. Curbside is standard (no charge).
-  if(isAirportKind(k) && trip.meetGreet && (veh==='sedan'||veh==='fsuv'||veh==='vsuv')){
-    base+=DEW_MEET_GREET;
-    lines.push({lbl:'Inside-airport greet (service add-on)', val:DEW_MEET_GREET, sub:true});
-  }
+  // MEET & GREET (inside-airport greet) — a flat $25 add-on kept OUT of the base (decided Oct 31, 2026):
+  // no gratuity, holiday or discount on it. Sedans/SUVs only. Curbside is standard (no charge).
+  const greetOn = isAirportKind(k) && trip.meetGreet && (veh==='sedan'||veh==='fsuv'||veh==='vsuv');
 
   // holiday (30% of base, outside gratuity) — still applies to partner rate
   const holidayName=holidayOf(trip.date);
@@ -869,6 +866,7 @@ function pricePartner(trip, k, partnerKey){
   if(gateIncluded){
     passthroughs.push({label:'Kiawah gate pass (included in rate)', amount:0, auto:true, included:true});
   }
+  if(greetOn) passthroughs.push({label:'Inside-airport greet (flat $25, no gratuity)', amount:DEW_MEET_GREET, auto:true});
 
   return {base, lines, note:P.name+' · '+destName, holidayPct, holidayName, passthroughs,
           partner:partnerKey, partnerGratPct:P.gratPct, partnerDiscPct:P.discPct};
@@ -1116,6 +1114,10 @@ function priceTrip(trip){
   // Kiawah gate pass — auto when a location is gate-controlled (known venue OR exact coords on Kiawah).
   if(tripTouchesKiawah(trip)){
     passthroughs.push({label:'Kiawah gate pass', amount:24, auto:true});
+  }
+  // Inside-airport greet (meet inside with a name sign): flat $25, airport pickups in sedans/SUVs, no gratuity.
+  if(k==='fromairport' && trip.meetGreet && (veh==='sedan'||veh==='fsuv'||veh==='vsuv')){
+    passthroughs.push({label:'Inside-airport greet (flat $25, no gratuity)', amount:DEW_MEET_GREET, auto:true});
   }
 
   return {base, lines, note:(STD[veh]?STD[veh].name:veh)+' '+(airport?'airport':(k==='hourly'?'hourly':'P2P')), holidayPct, holidayName, passthroughs};
@@ -1606,7 +1608,7 @@ function computeTrip(trip){
     if(sp!=null) trip.busHours=sp;
   }
   const p=priceTrip(trip);
-  const base=p.base; // time-rate + late-night (or partner flat rate + greet)
+  const base=p.base; // time-rate + late-night (or partner flat rate); the greet is a flat add-on in passthroughs
   trip.base=base;
   trip.note=p.note;
   const isPartner = !!p.partner;
@@ -1678,7 +1680,7 @@ function partnerBodyHTML(trip, k, partnerKey){
         + '<div><label style="margin-top:0;">Pickup time</label><input type="time" data-f="time" value="'+trip.time+'"></div>'
         + '</div>';
       const v=trip.vehicle, eligible=(v==='sedan'||v==='fsuv'||v==='vsuv');
-      g+='<div class="check" style="margin-top:12px;"><input type="checkbox" data-f="meetGreet"'+(trip.meetGreet?' checked':'')+(eligible?'':' disabled')+'><label>Inside-airport greet (+$'+DEW_MEET_GREET+' to base, sedans/SUVs)</label></div>';
+      g+='<div class="check" style="margin-top:12px;"><input type="checkbox" data-f="meetGreet"'+(trip.meetGreet?' checked':'')+(eligible?'':' disabled')+'><label>Inside-airport greet (+$'+DEW_MEET_GREET+' flat, no gratuity · sedans/SUVs)</label></div>';
     } else {
       g+='<div class="row2" style="margin-top:10px;">'
         + '<div><label style="margin-top:0;">Booked hours (2hr min)</label><input type="number" data-f="hours" value="'+(trip.hours||2)+'" min="2" step="0.5"></div>'
@@ -1717,7 +1719,7 @@ function partnerBodyHTML(trip, k, partnerKey){
   if(airport){
     const v=trip.vehicle;
     const eligible=(v==='sedan'||v==='fsuv'||v==='vsuv');
-    html+='<div class="check" style="margin-top:12px;"><input type="checkbox" data-f="meetGreet"'+(trip.meetGreet?' checked':'')+(eligible?'':' disabled')+'><label>Inside-airport greet (+$'+DEW_MEET_GREET+' to base, sedans/SUVs)</label></div>';
+    html+='<div class="check" style="margin-top:12px;"><input type="checkbox" data-f="meetGreet"'+(trip.meetGreet?' checked':'')+(eligible?'':' disabled')+'><label>Inside-airport greet (+$'+DEW_MEET_GREET+' flat, no gratuity · sedans/SUVs)</label></div>';
     if(!eligible) html+='<div class="hint">Inside greet is sedans/SUVs only; curbside is standard (no charge).</div>';
   }
   return html;
@@ -2126,6 +2128,9 @@ function standardFleetBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Vehicle</label><select data-f="vehicle">'+vehOpts(trip.vehicle)+'</select></div>'
     +   '<div style="display:flex;align-items:flex-end;"><button class="livebtn" data-live="1" type="button">◎ Live drive times</button></div>'
     + '</div>'
+    + (k==='fromairport'
+        ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="meetGreet"'+(trip.meetGreet?' checked':'')+((trip.vehicle==='sedan'||trip.vehicle==='fsuv'||trip.vehicle==='vsuv')?'':' disabled')+'><label>Inside-airport greet with a name sign (+$'+DEW_MEET_GREET+' flat, no gratuity · sedans/SUVs)</label></div>'
+        : '')
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '')
