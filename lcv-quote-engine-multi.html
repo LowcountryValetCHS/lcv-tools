@@ -914,16 +914,12 @@ function tripTouchesKiawah(trip){
 }
 
 // Downtown bus permit (Jeffrey, Nov 1, 2026, same as the website): the City of Charleston permits buses
-// in the Old and Historic District. LV adds $14 per bus per day, at cost (after gratuity, no markup), when
-// a bus picks up, stops or drops off on the peninsula SOUTH OF COLUMBUS STREET (west of King St the line
-// follows Fishburne St to the Ashley River; Columbus and Fishburne themselves count as in). The polygon is
-// the website's (src/lib/pricing/downtown.ts), built from the city's geocoded intersections: change both.
+// in its Old and Historic District. LV adds $14 per bus per day, at cost (after gratuity, no markup), when
+// a bus picks up, stops or drops off inside the district. DOWNTOWN_ZONE is the district's own boundary
+// from the city's zoning map (ordinance 2017-084), simplified to ~2 m — the website's
+// src/lib/pricing/downtown.ts has the same outline: change both together.
 const DOWNTOWN_BUS_PERMIT=14;
-const DOWNTOWN_ZONE=[
-  [32.7903,-79.965],[32.7904,-79.96032],[32.792,-79.95621],[32.7942,-79.95067],[32.7947,-79.94922], // Ashley River → Fishburne St to Rutledge
-  [32.7941,-79.94183],[32.7951,-79.93965],[32.796,-79.93766],[32.7965,-79.9362],[32.7971,-79.93472],[32.7975,-79.93369], // Columbus St: King → East Bay
-  [32.8005,-79.923],[32.802,-79.918],[32.768,-79.918],[32.764,-79.93],[32.768,-79.945],[32.776,-79.954],[32.785,-79.962] // Cooper River, harbor, Ashley River
-];
+const DOWNTOWN_ZONE=[[32.79767,-79.94106],[32.79741,-79.94092],[32.79745,-79.94081],[32.79667,-79.94033],[32.79669,-79.9403],[32.7963,-79.94005],[32.79634,-79.93996],[32.79581,-79.9396],[32.79584,-79.9395],[32.79589,-79.93953],[32.79613,-79.93903],[32.79599,-79.93895],[32.79579,-79.9394],[32.79572,-79.93935],[32.79576,-79.93926],[32.79561,-79.93914],[32.79563,-79.93917],[32.79557,-79.93932],[32.7955,-79.93927],[32.79545,-79.93938],[32.79508,-79.93914],[32.7952,-79.93891],[32.79463,-79.9386],[32.79477,-79.93831],[32.79412,-79.93797],[32.79401,-79.93824],[32.79396,-79.93816],[32.79387,-79.93829],[32.79379,-79.93822],[32.79364,-79.93843],[32.7934,-79.93816],[32.79309,-79.93796],[32.7931,-79.93793],[32.79301,-79.93786],[32.79306,-79.93779],[32.79287,-79.93763],[32.79283,-79.93769],[32.7927,-79.93758],[32.7927,-79.93749],[32.79258,-79.93738],[32.79253,-79.93745],[32.79244,-79.93737],[32.7924,-79.93742],[32.79231,-79.93734],[32.79233,-79.9373],[32.79225,-79.93724],[32.79238,-79.93706],[32.79153,-79.93662],[32.7917,-79.93622],[32.79134,-79.93599],[32.79152,-79.9356],[32.79185,-79.93581],[32.79248,-79.93418],[32.79195,-79.93386],[32.79123,-79.93188],[32.7906,-79.93148],[32.79095,-79.93067],[32.79208,-79.93127],[32.79416,-79.93232],[32.79435,-79.93181],[32.79224,-79.93075],[32.79212,-79.93107],[32.79153,-79.93075],[32.7918,-79.93009],[32.79058,-79.92936],[32.79258,-79.92489],[32.78832,-79.92229],[32.78769,-79.9238],[32.78775,-79.92482],[32.78711,-79.92659],[32.78992,-79.92695],[32.78917,-79.92868],[32.78722,-79.92838],[32.78716,-79.92876],[32.78641,-79.92867],[32.78645,-79.92855],[32.78604,-79.92873],[32.78572,-79.92879],[32.78573,-79.92868],[32.78532,-79.92867],[32.78534,-79.92799],[32.78395,-79.92784],[32.78397,-79.92763],[32.78362,-79.92759],[32.7836,-79.92779],[32.78378,-79.92795],[32.78358,-79.92827],[32.78304,-79.92797],[32.78162,-79.92749],[32.78171,-79.92674],[32.78163,-79.92672],[32.78171,-79.92592],[32.77917,-79.92561],[32.77952,-79.92347],[32.77291,-79.92329],[32.77306,-79.92692],[32.76903,-79.92869],[32.76972,-79.93728],[32.77121,-79.94034],[32.77274,-79.94326],[32.77338,-79.94402],[32.77367,-79.94419],[32.77472,-79.94575],[32.7754,-79.94692],[32.77578,-79.94729],[32.77612,-79.9475],[32.77609,-79.9476],[32.77617,-79.94787],[32.77631,-79.94808],[32.77653,-79.94867],[32.77695,-79.94914],[32.77734,-79.94968],[32.77791,-79.95012],[32.77698,-79.95103],[32.77783,-79.95231],[32.7776,-79.95252],[32.77831,-79.95361],[32.77859,-79.95337],[32.77978,-79.95517],[32.78046,-79.95455],[32.78104,-79.95512],[32.7836,-79.95831],[32.78349,-79.95855],[32.78379,-79.95794],[32.7839,-79.95757],[32.78395,-79.95725],[32.78393,-79.95668],[32.78389,-79.95643],[32.7837,-79.95594],[32.78375,-79.95591],[32.78363,-79.95568],[32.78343,-79.95545],[32.78147,-79.95452],[32.78101,-79.95401],[32.78054,-79.95284],[32.78044,-79.95181],[32.7803,-79.95137],[32.7792,-79.94937],[32.77946,-79.9492],[32.77988,-79.94978],[32.78021,-79.95013],[32.78055,-79.95046],[32.78088,-79.95061],[32.78153,-79.94828],[32.78143,-79.94825],[32.78167,-79.94714],[32.78218,-79.9473],[32.78238,-79.94664],[32.78247,-79.94669],[32.78259,-79.94638],[32.78307,-79.94665],[32.78356,-79.94686],[32.78372,-79.94634],[32.78381,-79.94639],[32.78397,-79.9459],[32.78328,-79.94558],[32.78384,-79.94349],[32.78549,-79.94418],[32.78527,-79.94505],[32.78596,-79.94536],[32.78555,-79.94662],[32.78722,-79.94738],[32.78764,-79.94612],[32.78731,-79.94598],[32.78749,-79.94539],[32.7876,-79.94544],[32.78764,-79.94531],[32.78757,-79.94528],[32.78772,-79.9448],[32.78786,-79.94488],[32.78802,-79.94444],[32.78781,-79.94429],[32.78826,-79.94257],[32.78842,-79.9427],[32.78857,-79.94222],[32.78832,-79.9421],[32.78838,-79.94188],[32.7883,-79.94186],[32.78839,-79.94147],[32.78857,-79.94161],[32.78872,-79.94101],[32.78834,-79.94076],[32.78831,-79.94057],[32.78793,-79.94035],[32.78798,-79.94017],[32.78756,-79.93988],[32.78746,-79.93999],[32.78666,-79.93953],[32.78654,-79.93998],[32.78603,-79.93974],[32.78605,-79.93962],[32.78586,-79.93953],[32.78573,-79.93993],[32.78473,-79.93939],[32.78531,-79.93767],[32.78685,-79.93873],[32.78701,-79.93815],[32.78758,-79.93851],[32.78761,-79.93841],[32.7879,-79.9386],[32.7877,-79.9393],[32.78804,-79.93955],[32.78814,-79.93919],[32.78821,-79.93922],[32.78824,-79.93915],[32.7883,-79.93917],[32.78819,-79.93966],[32.78855,-79.93989],[32.78882,-79.9389],[32.78916,-79.93904],[32.78907,-79.93936],[32.78918,-79.93946],[32.78932,-79.9395],[32.78959,-79.93973],[32.78965,-79.93952],[32.78991,-79.93964],[32.78988,-79.93972],[32.79,-79.93979],[32.79006,-79.93968],[32.7902,-79.93976],[32.79024,-79.93969],[32.79039,-79.9398],[32.79025,-79.94015],[32.79053,-79.94036],[32.7905,-79.94042],[32.79076,-79.9406],[32.79087,-79.94036],[32.79101,-79.94046],[32.79091,-79.94064],[32.79132,-79.94093],[32.79126,-79.94107],[32.79139,-79.94117],[32.79158,-79.94075],[32.79172,-79.94086],[32.79168,-79.94095],[32.79188,-79.94108],[32.7918,-79.94124],[32.79229,-79.94159],[32.79234,-79.94148],[32.79258,-79.94165],[32.79266,-79.94148],[32.7929,-79.94165],[32.79279,-79.94186],[32.7932,-79.94217],[32.79309,-79.94243],[32.7933,-79.94256],[32.79311,-79.943],[32.79326,-79.94309],[32.79335,-79.94291],[32.79343,-79.94296],[32.7936,-79.94258],[32.7937,-79.94264],[32.79344,-79.94322],[32.79363,-79.94335],[32.79388,-79.9428],[32.7946,-79.94332],[32.79465,-79.94317],[32.79488,-79.94334],[32.79495,-79.94319],[32.79514,-79.9433],[32.79509,-79.94338],[32.79525,-79.94347],[32.79521,-79.94357],[32.79559,-79.94376],[32.79551,-79.944],[32.79594,-79.94425],[32.79589,-79.94437],[32.79603,-79.94446],[32.79605,-79.94443],[32.79608,-79.94445],[32.79625,-79.94402],[32.79635,-79.9441],[32.79718,-79.94299],[32.79747,-79.94244],[32.79801,-79.94112],[32.79772,-79.94095]];
 function inDowntownZone(lat,lng){
   if(lat==null||lng==null||!isFinite(lat)||!isFinite(lng)) return false;
   let inside=false; const z=DOWNTOWN_ZONE;
@@ -932,6 +928,43 @@ function inDowntownZone(lat,lng){
     if((yi>lat)!==(yj>lat) && lng<(xj-xi)*(lat-yi)/(yj-yi)+xi) inside=!inside;
   }
   return inside;
+}
+// Approved bus streets (Jeffrey, Nov 1, 2026, same as the website's src/lib/pricing/bus-routes.ts): downtown,
+// buses keep to the streets the city approves for motorcoaches. The city's own route solver (the network
+// behind its touring map) gives road miles keeping to those streets and on any street; the difference,
+// at DOWNTOWN_BUS_MPH, is added to a dead-head leg that starts or ends in the district. Measured from the
+// CHS curb like the website, so both add the same minutes. "City approved a special route" skips it.
+const CITY_BUS_ROUTE='https://gis.charleston-sc.gov/arcgis/rest/services/External/Motorcoach_Network/NAServer/Route/solve';
+const DOWNTOWN_BUS_MPH=12;
+const BUS_ROUTE_HUB={lat:32.8976,lng:-80.0478}; // CHS terminal curb (the website's HUB.point)
+async function cityBusMiles(points, approved){
+  const stops={type:'features',spatialReference:{wkid:4326},features:points.map(p=>({geometry:{x:Math.round(p.lng*1e5)/1e5,y:Math.round(p.lat*1e5)/1e5},attributes:{}}))};
+  const q=new URLSearchParams({f:'json',returnRoutes:'true',outputLines:'esriNAOutputLineNone',returnStops:'false',returnDirections:'false',stops:JSON.stringify(stops)});
+  if(!approved) q.set('restrictionAttributeNames','Oneway');
+  const r=await fetch(CITY_BUS_ROUTE+'?'+q);
+  if(!r.ok) throw new Error('city route solver '+r.status);
+  const j=await r.json();
+  const mi=j&&j.routes&&j.routes.features&&j.routes.features[0]&&j.routes.features[0].attributes&&j.routes.features[0].attributes.Total_Miles;
+  if(typeof mi!=='number'||!isFinite(mi)) throw new Error((j&&j.error&&j.error.message)||'no city route');
+  return mi;
+}
+async function busRouteExtraMin(points){
+  const [a,f]=await Promise.all([cityBusMiles(points,true),cityBusMiles(points,false)]);
+  return Math.round(Math.max(0,a-f)/DOWNTOWN_BUS_MPH*60*10)/10;
+}
+// Looks up the approved-street minutes for a bus trip's dead-head legs (async; re-renders when done).
+function ensureBusRoutes(trip){
+  if(trip.kind!=='bus') return;
+  const pc=coordsOf(trip.fromKey,trip._fromGeo,trip.fromAddr), dc=coordsOf(trip.toKey,trip._toGeo,trip.toAddr);
+  const outIn=!!(pc&&inDowntownZone(pc.lat,pc.lng)), backIn=!!(dc&&inDowntownZone(dc.lat,dc.lng));
+  const key=[outIn&&pc.lat,outIn&&pc.lng,backIn&&dc.lat,backIn&&dc.lng].join('|');
+  if(trip._busRouteKey===key) return;
+  trip._busRouteKey=key;
+  if(!outIn&&!backIn){ trip._busRoute=null; return; }
+  trip._busRoute={status:'pending'};
+  Promise.all([outIn?busRouteExtraMin([BUS_ROUTE_HUB,pc]):0, backIn?busRouteExtraMin([dc,BUS_ROUTE_HUB]):0])
+    .then(([out,back])=>{ if(trip._busRouteKey!==key) return; trip._busRoute={status:'ok',out,back}; renderTrips(); renderSummary(); })
+    .catch(()=>{ if(trip._busRouteKey!==key) return; trip._busRoute={status:'error'}; renderTrips(); renderSummary(); });
 }
 function tripTouchesDowntown(trip){
   const pts=[coordsOf(trip.fromKey,trip._fromGeo,trip.fromAddr), coordsOf(trip.toKey,trip._toGeo,trip.toAddr)]
@@ -1021,12 +1054,19 @@ function priceTrip(trip){
     if(bpc||bdc){
       const legOut=bpc?Math.round(havMilesG(OTR_YARD,bpc)/30*60):0;
       const legBack=bdc?Math.round(havMilesG(bdc,OTR_YARD)/30*60):0;
-      trip._busDh={legOut,legBack};
-      reqH += (legOut+legBack)/60;
+      // Approved bus streets downtown (see ensureBusRoutes); skipped when the city approved a special route.
+      const br=(!trip.busSpecialRoute && trip._busRoute && trip._busRoute.status==='ok') ? trip._busRoute : null;
+      const addOut=br&&bpc?br.out:0, addBack=br&&bdc?br.back:0;
+      trip._busDh={legOut:legOut+addOut,legBack:legBack+addBack,addOut,addBack};
+      reqH += (legOut+legBack+addOut+addBack)/60;
     } else trip._busDh=null;
     const hrs = Math.max(minH, reqH);
     const base = rate*hrs;
     if(trip._busDh) lines.push({lbl:'Yard dead-head: yard→pickup '+trip._busDh.legOut+'min + dropoff→yard '+trip._busDh.legBack+'min (billed in full — buses bill the whole span)', val:null, txt:'', sub:true});
+    if(trip._busDh && (trip._busDh.addOut||trip._busDh.addBack)) lines.push({lbl:'Approved bus streets downtown: +'+Math.round((trip._busDh.addOut+trip._busDh.addBack)*10)/10+' min (city motorcoach routes; included above)', val:null, txt:'', sub:true});
+    else if(trip.busSpecialRoute) lines.push({lbl:'City approved a special route: downtown legs timed by the normal route', val:null, txt:'', sub:true});
+    else if(trip._busRoute && trip._busRoute.status==='pending') lines.push({lbl:'Checking the city\'s approved bus streets…', val:null, txt:'', sub:true});
+    else if(trip._busRoute && trip._busRoute.status==='error') lines.push({lbl:'City bus route lookup failed: downtown legs not adjusted for approved streets', val:null, txt:'', sub:true});
     lines.push({lbl:'Committed hrs', val:null, txt:reqH.toFixed(1)+(hrs>reqH?' → '+hrs.toFixed(1)+' (min)':''), sub:true});
     lines.push({lbl:'Effective rate ($'+b.base+' × '+factor.toFixed(3)+' = $'+rate.toFixed(2)+'/hr)', val:null, txt:season+'/'+day+'/'+time, sub:true});
     lines.push({lbl:'Base ('+hrs.toFixed(1)+'h × $'+rate.toFixed(2)+')', val:base});
@@ -1038,7 +1078,7 @@ function priceTrip(trip){
       passthroughs.push({label:'Kiawah gate pass (bus)', amount:43, auto:true});
     }
     if(tripTouchesDowntown(trip)){
-      passthroughs.push({label:'Downtown bus permit (City of Charleston, south of Columbus St)', amount:DOWNTOWN_BUS_PERMIT, auto:true});
+      passthroughs.push({label:'Downtown bus permit (City of Charleston, Old and Historic District)', amount:DOWNTOWN_BUS_PERMIT, auto:true});
     }
     return {base, lines, note:b.name+' · '+hrs.toFixed(1)+'h', holidayPct, holidayName, passthroughs, busFactor:{season,day,time,rate,factor}};
   }
@@ -2033,7 +2073,8 @@ function busBodyHTML(trip){
     +     '<div><label style="margin-top:0;">Time</label><select data-f="busTimeOv"><option value="">auto ('+time+')</option><option value="prime"'+timeSel('prime')+'>Prime 1.00</option><option value="offprime"'+timeSel('offprime')+'>Off-prime 0.85</option></select></div>'
     +   '</div>'
     + '</details>'
-    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. Downtown bus permit $14 when a pickup, stop or drop-off is south of Columbus St. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
+    + '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="busSpecialRoute"'+(trip.busSpecialRoute?' checked':'')+'><label>City approved a special route (time downtown legs by the normal route, not the approved bus streets)</label></div>'
+    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. Downtown bus permit $14 when a pickup, stop or drop-off is in the Old and Historic District; dead-head legs into the district follow the city\'s approved bus streets. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '');
@@ -2232,6 +2273,7 @@ function renderTrips(){
   const list=$('tripList');
   list.innerHTML='';
   TRIPS.forEach((trip,i)=>{
+    ensureBusRoutes(trip);
     computeTrip(trip);
     const meta=TRIP_TYPES[trip.kind];
     const card=document.createElement('div');
