@@ -913,6 +913,32 @@ function tripTouchesKiawah(trip){
   return false;
 }
 
+// Downtown bus permit (Jeffrey, Nov 1, 2026, same as the website): the City of Charleston permits buses
+// in the Old and Historic District. LV adds $14 per bus per day, at cost (after gratuity, no markup), when
+// a bus picks up, stops or drops off on the peninsula SOUTH OF COLUMBUS STREET (west of King St the line
+// follows Fishburne St to the Ashley River; Columbus and Fishburne themselves count as in). The polygon is
+// the website's (src/lib/pricing/downtown.ts), built from the city's geocoded intersections: change both.
+const DOWNTOWN_BUS_PERMIT=14;
+const DOWNTOWN_ZONE=[
+  [32.7903,-79.965],[32.7904,-79.96032],[32.792,-79.95621],[32.7942,-79.95067],[32.7947,-79.94922], // Ashley River → Fishburne St to Rutledge
+  [32.7941,-79.94183],[32.7951,-79.93965],[32.796,-79.93766],[32.7965,-79.9362],[32.7971,-79.93472],[32.7975,-79.93369], // Columbus St: King → East Bay
+  [32.8005,-79.923],[32.802,-79.918],[32.768,-79.918],[32.764,-79.93],[32.768,-79.945],[32.776,-79.954],[32.785,-79.962] // Cooper River, harbor, Ashley River
+];
+function inDowntownZone(lat,lng){
+  if(lat==null||lng==null||!isFinite(lat)||!isFinite(lng)) return false;
+  let inside=false; const z=DOWNTOWN_ZONE;
+  for(let i=0,j=z.length-1;i<z.length;j=i++){
+    const yi=z[i][0],xi=z[i][1],yj=z[j][0],xj=z[j][1];
+    if((yi>lat)!==(yj>lat) && lng<(xj-xi)*(lat-yi)/(yj-yi)+xi) inside=!inside;
+  }
+  return inside;
+}
+function tripTouchesDowntown(trip){
+  const pts=[coordsOf(trip.fromKey,trip._fromGeo,trip.fromAddr), coordsOf(trip.toKey,trip._toGeo,trip.toAddr)]
+    .concat((trip.stops||[]).map(st=>coordsOf(st.key,st._geo,st.addr)));
+  return pts.some(p=>p&&inDowntownZone(p.lat,p.lng));
+}
+
 function priceTrip(trip){
   const lines=[];
   const k=trip.kind;
@@ -1010,6 +1036,9 @@ function priceTrip(trip){
     const passthroughs=[];
     if(tripTouchesKiawah(trip)){
       passthroughs.push({label:'Kiawah gate pass (bus)', amount:43, auto:true});
+    }
+    if(tripTouchesDowntown(trip)){
+      passthroughs.push({label:'Downtown bus permit (City of Charleston, south of Columbus St)', amount:DOWNTOWN_BUS_PERMIT, auto:true});
     }
     return {base, lines, note:b.name+' · '+hrs.toFixed(1)+'h', holidayPct, holidayName, passthroughs, busFactor:{season,day,time,rate,factor}};
   }
@@ -2004,7 +2033,7 @@ function busBodyHTML(trip){
     +     '<div><label style="margin-top:0;">Time</label><select data-f="busTimeOv"><option value="">auto ('+time+')</option><option value="prime"'+timeSel('prime')+'>Prime 1.00</option><option value="offprime"'+timeSel('offprime')+'>Off-prime 0.85</option></select></div>'
     +   '</div>'
     + '</details>'
-    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
+    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. Downtown bus permit $14 when a pickup, stop or drop-off is south of Columbus St. The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '');
