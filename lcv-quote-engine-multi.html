@@ -614,14 +614,15 @@ function p2pCombineOptions(cfg){
       hours:Math.max(minHrs,t1)+Math.max(minHrs,t2), price:pairPrice, legal:!combineRequired,
       note: combineRequired
         ? ('Not allowed: the '+gap.toFixed(1)+'h gap leaves only '+Math.max(0,freeTime).toFixed(1)+'h of reusable time after dead-head (< 2h) — the vehicle can\'t be productively reused, so two cheap P2Ps would underprice holding it. Book continuous hourly.')
-        : ('Gap leaves '+freeTime.toFixed(1)+'h of reusable time (≥ 2h) — the vehicle is genuinely free between trips. Two P2Ps are fine.') },
+        : ('Gap leaves '+freeTime.toFixed(1)+'h of reusable time (≥ 2h) — the vehicle is genuinely free between trips. Two P2Ps are fine'+(contPrice<pairPrice?', but keeping it costs less.':'.')) },
     { key:'hourly', label:'Combine into continuous hourly',
       hours:contHours, price:contPrice, legal:true,
       note: combineRequired
         ? 'Required here — the gap is too tight for the vehicle to be released. One continuous hourly booking across the whole window.'
-        : 'Always available as an alternative; some clients prefer keeping the vehicle on hand.' }
+        : (contPrice<pairPrice ? 'Cheaper than two P2Ps here — recommend keeping the vehicle (same choice the website planner makes for a round trip).' : 'Always available as an alternative; some clients prefer keeping the vehicle on hand.') }
   ];
-  const rec = combineRequired ? 'hourly' : 'pair';
+  // The most economical legal choice (Jeffrey, Nov 1, 2026: same as the website's "Plan your day").
+  const rec = (combineRequired || contPrice < pairPrice) ? 'hourly' : 'pair';
   opts.forEach(o=>o.recommended=(o.key===rec));
   return {opts, recommended:rec, combineRequired, freeTime};
 }
@@ -2046,6 +2047,17 @@ function tripAdviceHTML(trip){
   h+='</div>';
   return h;
 }
+// Seats per bus, and what a group needs (the website planner's options: enough buses for everyone, or for a
+// one-way transfer one 49/57 coach making several trips; never suggested automatically, since guests wait).
+const BUS_SEATS={mc3241:41, mc4957:54, midcentury:50};
+function busGuestsHint(trip){
+  const g=+trip.busGuests||0; if(!g) return '';
+  const cap=BUS_SEATS[trip.busType]||54, n=Math.ceil(g/cap);
+  let h='<div class="hint" style="margin-top:22px;">'+g+' guests: '+n+' × this bus ('+cap+' seats each)';
+  if(trip.busType==='midcentury' && n>5) h+=' — more than the 5 vintage buses LV has';
+  if(g>54) h+='. Or one 49/57 coach making '+Math.ceil(g/54)+' trips for a one-way transfer (book it from the first pickup until the last group arrives).';
+  return h+'</div>';
+}
 function busBodyHTML(trip){
   const er=busEffRate(trip);
   const season=er.season, day=er.day, time=er.time, rate=er.rate, minH=er.minH;
@@ -2072,6 +2084,7 @@ function busBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Final dropoff (end of booked hours)</label>'+locFieldHTML('toKey','toAddr',trip.toKey,trip.toAddr)+'</div>'
     +   '<div><label style="margin-top:0;">Bus</label><select data-f="busType">'+busTypeOpts(trip.busType)+'</select></div>'
     + '</div>'
+    + '<div class="row2" style="margin-top:10px;"><div><label style="margin-top:0;">Guests (optional)</label><input type="number" data-f="busGuests" value="'+(trip.busGuests||'')+'" min="1" step="1"></div><div>'+busGuestsHint(trip)+'</div></div>'
     + tripAdviceHTML(trip)
     + '<div class="bus-rate">Effective rate: <strong>$'+rate.toFixed(2)+'/hr</strong> = $'+b.base+' base × '+factor.toFixed(3)+' <span class="bus-factors">('+season+' · '+day+' · '+time+')</span></div>'
     + '<details class="drive-override"><summary>Demand factors (override auto)</summary>'
@@ -2500,6 +2513,12 @@ function dayTimelineCheck(){
         }
       }
     });
+    // How many of a limited vehicle we can send at once (everything else can be added through partners).
+    // Same limits as the website planner: vintage buses 5, Sprinter Limos 4, Magnolia 1, vintage cars by name.
+    const LIMIT={'bus:midcentury':5,'std:slimo':4,'vint:rolls':1,'vint:hardtop':3,'vint:classicvan':1,'vint:convertible':1};
+    if(LIMIT[g[0].ck]!=null && chains.length>LIMIT[g[0].ck]){
+      findings.push({sev:'warn', text:date+': these trips need '+chains.length+' × '+cname+' at once, and LV can send '+LIMIT[g[0].ck]+'. Choose another vehicle for one of them (or stagger the times).'});
+    }
     if(chains.length>1){
       multiVehicle=true;
       const chainDesc=chains.map((c,ci)=>cname.split(' ').pop()+' '+(ci+1)+': trip'+(c.length>1?'s':'')+' '+c.map(x=>x.i+1).join(', ')).join(' · ');
@@ -2529,6 +2548,13 @@ function dayTimelineCheck(){
             continue;
           }
         }
+        // Same vehicle all day: one booking by the hour from A's start to B's end, when that costs less than
+        // two bookings (the website planner books a later ride in an earlier ride's vehicles on this rule).
+        const one=combinedPrice(A.t, B.t, (B.ss.startMin+B.ss.spanHrs*60-A.ss.startMin)/60);
+        const sep=(+A.t.subtotal||0)+(+B.t.subtotal||0);
+        if(one!=null && one < sep-0.005){
+          findings.push({sev:'info', text:date+': trips '+(A.i+1)+' & '+(B.i+1)+' can share one '+cname+' as one booking by the hour ('+M(one)+' before card fee) instead of '+M(sep)+' booked separately — the website planner does this automatically.'});
+        }
         const turnMin=turnaroundMin(A,B), spareMin=gapH*60-turnMin;
         if(spareMin<15){
           const repoM=repoMinutes(A,B);
@@ -2538,6 +2564,38 @@ function dayTimelineCheck(){
     });
   }
   return {findings, fleetLines, pairsChecked, multiVehicle};
+}
+
+// One booking by the hour covering trips A and B on A's vehicle (hours rounded up to the quarter hour, as the
+// website planner does). Standard fleet → hourly; buses → bus hours. Null for other kinds.
+function combinedPrice(A, B, spanHrs){
+  const hrs=Math.ceil(spanHrs*4-1e-9)/4;
+  const std=['fromairport','toairport','p2p','hourly'];
+  let c;
+  if(std.includes(A.kind) && std.includes(B.kind) && STD[A.vehicle]) c={...A, kind:'hourly', hours:hrs, endTime:'', toKey:B.toKey, toAddr:B.toAddr, _toGeo:B._toGeo, stops:[], waits:[]};
+  else if(A.kind==='bus' && B.kind==='bus') c={...A, busHours:hrs, endTime:'', toKey:B.toKey, toAddr:B.toAddr, _toGeo:B._toGeo, stops:[], waits:[]};
+  else return null;
+  try { computeTrip(c); return +c.subtotal||null; } catch(e){ return null; }
+}
+
+// Retainer (the terms): a contract quote — any bus or vintage vehicle, or $1,000+ — pays 50% when confirmed and
+// the balance 30 days before the first trip; inside 30 days, 100% when confirmed. Same as the website.
+function retainerLine(w){
+  const cf=w.cfTrips.filter(t=>t.date);
+  if(!cf.length) return '';
+  const contract = cf.some(t=>t.kind==='bus'||t.kind==='vintage'||t.kind==='otr') || w.grand>=1000;
+  if(!contract) return '';
+  const first=cf.map(t=>t.date).sort()[0];
+  const today=new Date(); today.setHours(12,0,0,0);
+  const firstD=new Date(first+'T12:00:00');
+  const days=Math.round((firstD-today)/86400000);
+  if(days>=30){
+    const due=new Date(firstD.getTime()-30*86400000);
+    const dueTxt=due.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+    return '<div class="line sub"><span class="lbl">Retainer at confirmation (50%)</span><span class="val">'+M(w.grand/2)+'</span></div>'
+      + '<div class="line sub"><span class="lbl">Balance due '+dueTxt+'</span><span class="val">'+M(w.grand-w.grand/2)+'</span></div>';
+  }
+  return '<div class="line sub"><span class="lbl">Due at confirmation (100%, first trip within 30 days)</span><span class="val">'+M(w.grand)+'</span></div>';
 }
 
 function renderSummary(){
@@ -2564,6 +2622,7 @@ function renderSummary(){
     html+=`<div class="line sub"><span class="lbl">Processing fee</span><span class="val">none (${w.payment.toUpperCase()})</span></div>`;
   }
   html+=`<div class="line total"><span class="lbl">Grand total</span><span class="val">${M(w.grand)}</span></div>`;
+  html+=retainerLine(w);
   // Day-timeline / fleet check — cross-trip reasoning on shared dates
   const tlc=dayTimelineCheck();
   if(tlc.fleetLines.length || tlc.findings.length){
@@ -2896,7 +2955,7 @@ $('tripList').addEventListener('input',e=>{
   const f=e.target.dataset.f; if(!f) return;
   const card=e.target.closest('[data-tid]'); if(!card) return;
   const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
-  const numeric=['childSeats','hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle','gapSeg1','gapGap','gapSeg2','gapDeadhead','p2pT1','p2pGap','p2pT2','p2pDeadhead'];
+  const numeric=['childSeats','hours','driveStd','driveBusy','gratuityPct','discountPct','busHours','vintageServiceHrs','vintageNonconsecHrs','vintageDeadheadMin','otrDays','otrOvernights','otrMiles','otrDrivers','otrTolls','otrReliefShuttle','gapSeg1','gapGap','gapSeg2','gapDeadhead','p2pT1','p2pGap','p2pT2','p2pDeadhead','busGuests'];
   if(e.target.type==='checkbox'){
     trip[f]=e.target.checked;
   } else {
@@ -2925,7 +2984,7 @@ $('tripList').addEventListener('input',e=>{
   }
   // Structural changes that alter which inputs/rate display show → rebuild this card's body.
   const dewStructural = isPartnerRouting(currentRouting()) && (f==='dewDest'||f==='vehicle');
-  const busStructural = trip.kind==='bus' && (f==='busType'||f==='date'||f==='time'||f==='busSeasonOv'||f==='busDayOv'||f==='busTimeOv');
+  const busStructural = trip.kind==='bus' && (f==='busType'||f==='date'||f==='time'||f==='busSeasonOv'||f==='busDayOv'||f==='busTimeOv'||f==='busGuests');
   const vintageStructural = trip.kind==='vintage' && f==='vintageType';
   if(trip.kind==='otr' && f==='otrDays'){ trip.otrOvernights=Math.max(0,(+trip.otrDays||1)-1); }
   if((trip.kind==='hourly' && (f==='hours'||f==='endTime'||f==='time')) || (trip.kind==='bus' && (f==='busHours'||f==='endTime'||f==='time'))){
