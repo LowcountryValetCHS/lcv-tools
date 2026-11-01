@@ -532,13 +532,16 @@ function seasonOf(month){ // month 0-11
 }
 function dowKeyOf(dn){ return dn===6?'sat':(dn===5?'fri':(dn===0?'sun':'weekday')); }
 // US-observed holidays the spec lists for the 30% surcharge. Returns label or null.
-function holidayOf(dateStr){
+// §6.1: New Year's is time-bounded (Dec 31 10:00 PM through Jan 1 12:00 PM); every other holiday is all day.
+// timeStr "HH:MM": without it, Dec 31 / Jan 1 are flagged all day (so nothing is missed before a time is set).
+function holidayOf(dateStr, timeStr){
   if(!dateStr) return null;
+  const tm=/^(\d{1,2}):(\d{2})/.exec(timeStr||''); const mins=tm?(+tm[1])*60+(+tm[2]):null;
   const d=new Date(dateStr+'T00:00:00'); const m=d.getMonth(), day=d.getDate(), dow=d.getDay(), y=d.getFullYear();
   const nthDow=(month,weekday,n)=>{ let c=0; for(let dd=1;dd<=31;dd++){const t=new Date(y,month,dd); if(t.getMonth()!==month)break; if(t.getDay()===weekday){c++; if(c===n)return t.getDate();}} return null; };
   const lastDow=(month,weekday)=>{ let r=null; for(let dd=1;dd<=31;dd++){const t=new Date(y,month,dd); if(t.getMonth()!==month)break; if(t.getDay()===weekday)r=t.getDate();} return r; };
-  if(m===0&&day===1) return "New Year's Day";
-  if(m===11&&day===31) return "New Year's Eve";
+  if(m===0&&day===1) return (mins==null||mins<12*60) ? "New Year's Day" : null;
+  if(m===11&&day===31) return (mins==null||mins>=22*60) ? "New Year's Eve" : null;
   if(m===4&&day===lastDow(4,1)) return "Memorial Day";
   if(m===6&&day===4) return "Independence Day";
   if(m===8&&day===nthDow(8,1,1)) return "Labor Day";
@@ -576,7 +579,7 @@ function deriveEngineInputs(){
     $('tod').value=v;
   }
   // holiday auto-check
-  if(!$('holiday').dataset.ovr){ $('holiday').checked = !!holidayOf(dateStr); }
+  if(!$('holiday').dataset.ovr){ $('holiday').checked = !!holidayOf(dateStr, $('svcTimeE')?$('svcTimeE').value:''); }
   // kiawah gate auto-check from either location
   if(!$('kiawah').dataset.ovr){
     const f=$('fromLocE')?$('fromLocE').value:'', to=$('toLocE')?$('toLocE').value:'';
@@ -730,7 +733,7 @@ function calc(){
 
 function applyModifiers(base,hrs,isBus){
   let html='', b=base, extra=0;
-  if($('holiday').checked){ const pct=0.30; const h=base*pct; extra+=h; const hn=holidayOf($('svcDateE')?$('svcDateE').value:''); html+=line('Holiday surcharge (30%'+(hn?' — '+hn:'')+')',M(h),true); }
+  if($('holiday').checked){ const pct=0.30; const h=base*pct; extra+=h; const hn=holidayOf($('svcDateE')?$('svcDateE').value:'', $('svcTimeE')?$('svcTimeE').value:''); html+=line('Holiday surcharge (30%'+(hn?' — '+hn:'')+')',M(h),true); }
   if($('tod').value==='late'){ const lh=Math.max(35,hrs*35); extra+=lh; html+=line('Late-night ($35/hr, $35 min)',M(lh),true); }
   if($('kiawah').checked){ const g=isBus?43:24; extra+=g; html+=line('Kiawah gate pass',M(g),true); }
   b=base+extra;

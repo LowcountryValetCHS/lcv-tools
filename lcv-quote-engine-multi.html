@@ -829,7 +829,7 @@ function pricePartner(trip, k, partnerKey){
       gctPass.push({label:'Meet and Greet at the TSA security exit (flat $25, no gratuity)', amount:DEW_MEET_GREET, auto:true});
     }
     { const cs=childSeatPass(trip); if(cs) gctPass.push(cs); }
-    const holidayName=holidayOf(trip.date);
+    const holidayName=holidayOf(trip.date, trip.time);
     const holidayPct = holidayName ? 0.30 : 0;
     return {base, lines, note:'GCT · '+destName, holidayPct, holidayName, passthroughs:gctPass,
             partner:partnerKey, partnerGratPct:P.gratPct, partnerDiscPct:P.discPct};
@@ -866,7 +866,7 @@ function pricePartner(trip, k, partnerKey){
   const greetOn = isAirportKind(k) && trip.meetGreet && (veh==='sedan'||veh==='fsuv'||veh==='vsuv');
 
   // holiday (30% of base, outside gratuity) — still applies to partner rate
-  const holidayName=holidayOf(trip.date);
+  const holidayName=holidayOf(trip.date, trip.time);
   const holidayPct = holidayName ? 0.30 : 0;
 
   // pass-throughs: Kiawah gate (included in rate for Sanctuary/Ocean Course)
@@ -966,7 +966,7 @@ function priceTrip(trip){
       base+=lh;
       lines.push({lbl:'Late-night surcharge ('+vLnHrs.toFixed(1)+'h in window × $35 · $35 min)', val:lh, sub:true});
     }
-    const holidayName=holidayOf(trip.date);
+    const holidayName=holidayOf(trip.date, trip.time);
     const holidayPct = holidayName ? 0.30 : 0;
     return {base, lines, note:v.name+' · '+svcHrs.toFixed(1)+'h', holidayPct, holidayName, passthroughs:[]};
   }
@@ -1001,7 +1001,7 @@ function priceTrip(trip){
     lines.push({lbl:'Effective rate ($'+b.base+' × '+factor.toFixed(3)+' = $'+rate.toFixed(2)+'/hr)', val:null, txt:season+'/'+day+'/'+time, sub:true});
     lines.push({lbl:'Base ('+hrs.toFixed(1)+'h × $'+rate.toFixed(2)+')', val:base});
     // holiday + Kiawah gate ($43 for buses) as pass-through
-    const holidayName=holidayOf(trip.date);
+    const holidayName=holidayOf(trip.date, trip.time);
     const holidayPct = holidayName ? 0.30 : 0;
     const passthroughs=[];
     if(tripTouchesKiawah(trip)){
@@ -1104,7 +1104,7 @@ function priceTrip(trip){
   }
 
   // ---- HOLIDAY (auto from date): % of base, folded into base BEFORE gratuity (handled in computeTrip). ----
-  const holidayName=holidayOf(trip.date);
+  const holidayName=holidayOf(trip.date, trip.time);
   const holidayPct = holidayName ? 0.30 : 0;
 
   // ---- PASS-THROUGHS (auto-detected): reimbursements added AFTER gratuity, NO markup. ----
@@ -1148,13 +1148,16 @@ function isLateNight(timeStr){
   return t>=23.5*60 || t<6.5*60;
 }
 // holiday detection (ported from single-trip engine) — returns name or null
-function holidayOf(dateStr){
+// §6.1: New Year's is time-bounded (Dec 31 10:00 PM through Jan 1 12:00 PM); every other holiday is all day.
+// timeStr "HH:MM": without it, Dec 31 / Jan 1 are flagged all day (so nothing is missed before a time is set).
+function holidayOf(dateStr, timeStr){
   if(!dateStr) return null;
+  const tm=/^(\d{1,2}):(\d{2})/.exec(timeStr||''); const mins=tm?(+tm[1])*60+(+tm[2]):null;
   const d=new Date(dateStr+'T00:00:00'); const m=d.getMonth(), day=d.getDate(), y=d.getFullYear();
   const nthDow=(month,weekday,n)=>{ let c=0; for(let dd=1;dd<=31;dd++){const t=new Date(y,month,dd); if(t.getMonth()!==month)break; if(t.getDay()===weekday){c++; if(c===n)return t.getDate();}} return null; };
   const lastDow=(month,weekday)=>{ let r=null; for(let dd=1;dd<=31;dd++){const t=new Date(y,month,dd); if(t.getMonth()!==month)break; if(t.getDay()===weekday)r=t.getDate();} return r; };
-  if(m===0&&day===1) return "New Year's Day";
-  if(m===11&&day===31) return "New Year's Eve";
+  if(m===0&&day===1) return (mins==null||mins<12*60) ? "New Year's Day" : null;
+  if(m===11&&day===31) return (mins==null||mins>=22*60) ? "New Year's Eve" : null;
   if(m===4&&day===lastDow(4,1)) return "Memorial Day";
   if(m===6&&day===4) return "Independence Day";
   if(m===8&&day===nthDow(8,1,1)) return "Labor Day";
