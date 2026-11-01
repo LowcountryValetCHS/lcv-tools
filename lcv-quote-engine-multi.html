@@ -109,6 +109,7 @@
   .tlc-item{font-size:12px;line-height:1.45;padding:7px 10px;border-radius:4px;margin-bottom:6px;}
   .tlc-item.conflict{background:#fbe7e2;color:#a8442a;border:1px solid #d9a08e;}
   .tlc-item.warn{background:#f9f2df;color:#8a6d39;border:1px solid #d9c79a;}
+  .btn-mini{margin-left:6px;padding:2px 8px;font:inherit;font-weight:600;border:1px solid #b8955a;background:#fff;color:#7a5b26;border-radius:4px;cursor:pointer;}
   .tlc-item.info{background:#f2f2ee;color:#5a615c;border:1px solid #d8d8d0;}
   .tlc-item.ok{background:#e7f2ea;color:#2f7d50;border:1px solid #99c7ab;}
   .tlc-item.fleet{background:#eef1f6;color:#3d4d63;border:1px solid #b9c4d4;font-weight:600;}
@@ -957,13 +958,18 @@ function ensureBusRoutes(trip){
   if(trip.kind!=='bus') return;
   const pc=coordsOf(trip.fromKey,trip._fromGeo,trip.fromAddr), dc=coordsOf(trip.toKey,trip._toGeo,trip.toAddr);
   const outIn=!!(pc&&inDowntownZone(pc.lat,pc.lng)), backIn=!!(dc&&inDowntownZone(dc.lat,dc.lng));
-  const key=[outIn&&pc.lat,outIn&&pc.lng,backIn&&dc.lat,backIn&&dc.lng].join('|');
+  // The day's own drives (pickup → stops → drop-off): each leg that starts or ends in the district.
+  const chain=[pc].concat((trip.stops||[]).map(st=>coordsOf(st.key,st._geo,st.addr))).concat([dc]);
+  const svcLegs=[];
+  if(chain.every(Boolean)) for(let i=0;i<chain.length-1;i++){ const a=chain[i], z=chain[i+1]; if(inDowntownZone(a.lat,a.lng)||inDowntownZone(z.lat,z.lng)) svcLegs.push([a,z]); }
+  const key=[outIn&&pc.lat,outIn&&pc.lng,backIn&&dc.lat,backIn&&dc.lng].concat(svcLegs.map(l=>l[0].lat+','+l[0].lng+'>'+l[1].lat+','+l[1].lng)).join('|');
   if(trip._busRouteKey===key) return;
   trip._busRouteKey=key;
-  if(!outIn&&!backIn){ trip._busRoute=null; return; }
+  if(!outIn&&!backIn&&!svcLegs.length){ trip._busRoute=null; return; }
   trip._busRoute={status:'pending'};
-  Promise.all([outIn?busRouteExtraMin([BUS_ROUTE_HUB,pc]):0, backIn?busRouteExtraMin([dc,BUS_ROUTE_HUB]):0])
-    .then(([out,back])=>{ if(trip._busRouteKey!==key) return; trip._busRoute={status:'ok',out,back}; renderTrips(); renderSummary(); })
+  Promise.all([outIn?busRouteExtraMin([BUS_ROUTE_HUB,pc]):0, backIn?busRouteExtraMin([dc,BUS_ROUTE_HUB]):0,
+      Promise.all(svcLegs.map(l=>busRouteExtraMin(l).catch(()=>0))).then(a=>Math.round(a.reduce((x,y)=>x+y,0)))])
+    .then(([out,back,svc])=>{ if(trip._busRouteKey!==key) return; trip._busRoute={status:'ok',out,back,svc}; renderTrips(); renderSummary(); })
     .catch(()=>{ if(trip._busRouteKey!==key) return; trip._busRoute={status:'error'}; renderTrips(); renderSummary(); });
 }
 function tripTouchesDowntown(trip){
@@ -2021,7 +2027,7 @@ function tripAdviceHTML(trip){
   const chk=hourlyItineraryCheck(trip, booked);
   let h='<div data-hourlyadvice="1">';
   chk.notes.forEach(n=>{ h+='<div class="tlc-item warn" style="margin-top:8px;">⚠ '+n+'</div>'; });
-  if(chk.fits===true) h+='<div class="tlc-item ok" style="margin-top:8px;">✓ Itinerary fits the booked window (~'+chk.requiredHrs.toFixed(1)+'h needed of '+chk.bookedHrs.toFixed(1)+'h booked).</div>';
+  if(chk.fits===true) h+='<div class="tlc-item ok" style="margin-top:8px;">✓ Plan fits the booked window with 15 min to spare (~'+chk.requiredHrs.toFixed(1)+'h needed of '+chk.bookedHrs.toFixed(1)+'h booked'+(chk.loadHrs?', incl. '+Math.round(chk.loadHrs*60)+' min loading':'')+(chk.busStreetHrs?' and '+Math.round(chk.busStreetHrs*60)+' min on approved bus streets':'')+').</div>';
   const w=chk.biggestWait;
   if(w && (+w.hrs||0)>0 && trip.time){
     const seg1=timeSpanHrs(trip.time, w.start);
@@ -2364,28 +2370,52 @@ function timeSpanHrs(start, end){
 }
 // Audits an hourly booking's itinerary against its booked window. Degrades gracefully:
 // with only start+hours it returns the window; locations/stops/waits tighten the check.
+// Does the planned day fit the hours booked? (Jeffrey, Nov 1, 2026 — same rule as the website's plan-fit.ts.)
+// Plan = drives (live Google times when fetched, else 30-mph estimate) + planned time at each stop (10 min when
+// not given) + waits; buses add 5 min loading per stop and the extra time on the city's approved bus streets
+// downtown. It fits with 15 minutes to spare; otherwise "Extend to N h" sets the smallest whole-hour block that
+// fits (the website books whole hours, so both land on the same block).
+const PLAN_CUSHION_MIN=15, BUS_LOADING_MIN=5;
 function hourlyItineraryCheck(trip, bookedOverride){
   const booked=(bookedOverride!=null)?+bookedOverride:(+trip.hours||0);
-  const out={bookedHrs:booked, driveHrs:0, dwellHrs:0, waitHrs:0, requiredHrs:null, fits:null, notes:[], biggestWait:null};
+  const bus=trip.kind==='bus';
+  const out={bookedHrs:booked, driveHrs:0, dwellHrs:0, waitHrs:0, loadHrs:0, busStreetHrs:0, requiredHrs:null, fits:null, fitHours:null, notes:[], biggestWait:null};
   // waits
   (trip.waits||[]).forEach(w=>{ out.waitHrs+=(+w.hrs||0); });
   const waits=(trip.waits||[]).slice().sort((a,b)=>(+b.hrs||0)-(+a.hrs||0));
   if(waits.length) out.biggestWait=waits[0];
-  // route estimate: pickup → stops → dropoff (coords chain at 30-mph planning speed)
+  // drives: pickup → stops → dropoff
   const chain=[coordsOf(trip.fromKey,trip._fromGeo,trip.fromAddr)]
     .concat((trip.stops||[]).map(st=>coordsOf(st.key,st._geo,st.addr)))
     .concat([coordsOf(trip.toKey,trip._toGeo,trip.toAddr)])
     .filter(Boolean);
-  if(chain.length>=2){
+  const live = trip.kind==='hourly' && trip._lastFetchKey && trip._lastFetchKey===driveInputKey(trip);
+  if(live){ out.driveHrs=Math.round((+trip.driveStd||0)/60*100)/100; }
+  else if(chain.length>=2){
     for(let i=0;i<chain.length-1;i++) out.driveHrs+=havMilesG(chain[i],chain[i+1])/30;
     out.driveHrs=Math.round(out.driveHrs*100)/100;
   }
-  (trip.stops||[]).forEach(st=>{ out.dwellHrs+=(+st.dwellMin||0)/60; });
+  const stops=trip.stops||[];
+  stops.forEach(st=>{ out.dwellHrs+=stopPlanMin(st)/60; });
   out.dwellHrs=Math.round(out.dwellHrs*100)/100;
+  if(bus){
+    out.loadHrs=stops.length*BUS_LOADING_MIN/60;
+    const br=trip._busRoute;
+    if(!trip.busSpecialRoute && br && br.status==='ok') out.busStreetHrs=(+br.svc||0)/60;
+  }
   if(chain.length>=2 || out.waitHrs>0 || out.dwellHrs>0){
-    out.requiredHrs=Math.round((out.driveHrs+out.dwellHrs+out.waitHrs)*100)/100;
-    out.fits = booked>0 ? (out.requiredHrs <= booked+0.01) : null;
-    if(out.fits===false) out.notes.push('Itinerary needs ~'+out.requiredHrs.toFixed(1)+'h (drive '+out.driveHrs.toFixed(1)+' + stops '+out.dwellHrs.toFixed(1)+' + waits '+out.waitHrs.toFixed(1)+') but the booked window is '+booked.toFixed(1)+'h — extend the end time or trim the plan.');
+    out.requiredHrs=Math.round((out.driveHrs+out.busStreetHrs+out.dwellHrs+out.loadHrs+out.waitHrs)*100)/100;
+    const needH=out.requiredHrs+PLAN_CUSHION_MIN/60;
+    out.fitHours=Math.ceil(needH-1e-9);
+    out.fits = booked>0 ? (needH <= booked+0.001) : null;
+    if(out.fits===false){
+      const parts=['drive '+out.driveHrs.toFixed(1)+(live?'':' est.')];
+      if(out.busStreetHrs) parts.push('approved bus streets '+Math.round(out.busStreetHrs*60)+' min');
+      parts.push('stops '+out.dwellHrs.toFixed(1));
+      if(out.loadHrs) parts.push('loading '+Math.round(out.loadHrs*60)+' min');
+      if(out.waitHrs) parts.push('waits '+out.waitHrs.toFixed(1));
+      out.notes.push('Plan needs ~'+out.requiredHrs.toFixed(1)+'h ('+parts.join(' + ')+') plus 15 min to spare, but '+booked.toFixed(1)+'h is booked. <button type="button" class="btn-mini" data-extendhours="'+out.fitHours+'">Extend to '+out.fitHours+'h</button>');
+    }
   }
   return out;
 }
@@ -2597,6 +2627,17 @@ $('tripList').addEventListener('click',e=>{
   }
   const del=e.target.closest('[data-del]');
   if(del){ delTrip(del.dataset.del); return; }
+  // Plan doesn't fit: extend to the smallest whole-hour block that does (same rule as the website).
+  const ext=e.target.closest('[data-extendhours]');
+  if(ext){
+    const card=e.target.closest('[data-tid]'); if(!card) return;
+    const trip=TRIPS.find(t=>t.id===card.dataset.tid); if(!trip) return;
+    const h=+ext.dataset.extendhours; if(!(h>0)) return;
+    if(trip.kind==='bus'){ trip.busHours=h; if(trip.time) trip.endTime=addHrsToTime(trip.time,h); }
+    else trip.hours=h;
+    renderTrips(); renderSummary();
+    return;
+  }
   const live=e.target.closest('[data-live]');
   if(live){
     const card=e.target.closest('[data-tid]'); if(!card) return;
