@@ -260,21 +260,21 @@ const WAIT_RATE={sedan:30,fsuv:30,vsuv:30,svan:50,slimo:50}; // $ per 15-min wai
 const VINTAGE_CAR_OVERTIME=75, BUS_OVERTIME=90; // $ per 15 min past the booked end time (Jeffrey, Nov 2, 2026; same as the website)
 const STOP_INCLUDED_MIN=10, STOP_INCR_MIN=15; // en-route stops (Nov 1, 2026, same as the website): the planned stop time is billed at the time rate, no per-stop charge; 10 min when not given; running past the plan = wait time in 15-min increments, billed after the trip
 function stopPlanMin(st){ const m=+st.dwellMin; return (st.dwellMin!=null && st.dwellMin!=='' && isFinite(m)) ? Math.min(600,Math.max(0,Math.round(m))) : STOP_INCLUDED_MIN; }
-const GREETER_RATE=50, GREETER_MIN_HRS=3, GREETER_SETUP_HRS=1; // $50/hr, 3hr min, +20% grat; 1h setup/prep added to greeting hours
+const GREETER_RATE=50, GREETER_MIN_HRS=3, GREETER_SETUP_HRS=1; // $50/hr, 3hr min, +15% grat; 1h setup/prep added to greeting hours
 
 // ============================================================================
 // VINTAGE / CLASSIC CARS — tiered hourly (event/experience product).
 // First service hour (by vehicle) + consecutive hrs @ $225 + non-consecutive @ $450.
 // Dead-head (round-trip CHS, 15-min/leg waiver) bills at the consecutive rate ($225/hr).
-// One first-hour charge per day, 1hr min. Standard wrapper (20% grat, 4% card). Holiday + late-night apply.
+// One first-hour charge per day, 1hr min. Standard wrapper (15% grat, 4% card). Holiday + late-night apply.
 // Vintage cars and the classic van: one first-hour price for all (Jeffrey, Nov 2026), same as the website.
 // The Rolls-Royce (Magnolia) is an affiliate car: first hour = affiliate charge × 1.3 with gratuity already
-// included, added hours $270 / $540 (gratuity included), no LV dead-head. Matches the website engine §10.5.
+// included, added hours $258.75 / $517.50 (the vintage car hours + 15% gratuity), no LV dead-head. Matches the website engine §10.5.
 const VINTAGE = {
   hardtop:     {name:'Classic car (Alice, Aida, Bernard)', first:740, consec:225, nonconsec:450},
   convertible: {name:'Classic convertible',                first:740, consec:225, nonconsec:450},
   classicvan:  {name:'Classic van (Terra)',                first:740, consec:225, nonconsec:450},
-  rolls:       {name:'Rolls-Royce (Magnolia)',             first:890*1.3, consec:270, nonconsec:540, gratuityIncluded:true, noDeadhead:true}
+  rolls:       {name:'Rolls-Royce (Magnolia)',             first:890*1.3, consec:258.75, nonconsec:517.5, gratuityIncluded:true, noDeadhead:true}
 };
 const VINTAGE_CONSEC_RATE=225, VINTAGE_NONCONSEC_RATE=450;
 
@@ -634,7 +634,7 @@ function p2pCombineOptions(cfg){
 // BUS / MOTORCOACH MODEL — demand-multiplied hourly (retail).
 // Effective /hr = base × season × day × time, floored at 70% of base.
 // Committed hours (service + dead-head + any gap) × effective rate = base fare.
-// Standard wrapper (20% grat, 4% card). Dead-head = round-trip CHS, 15-min/leg waiver.
+// Standard wrapper (15% grat, 4% card). Dead-head = round-trip CHS, 15-min/leg waiver.
 const BUSES = {
   mc3241: {name:'32/41 Motorcoach', base:230},
   mc4957: {name:'49/57 Motorcoach', base:299},
@@ -1642,14 +1642,16 @@ async function refreshTripTimes(trip, statusEl){
 
 // Trip-type catalog. clientFacing flag is the key fork from the design.
 const TRIP_TYPES={
-  fromairport:{label:'From Airport',   clientFacing:true,  defGrat:20},
-  toairport:  {label:'To Airport',     clientFacing:true,  defGrat:20},
-  p2p:        {label:'Point-to-Point', clientFacing:true,  defGrat:20},
-  hourly:     {label:'Hourly',         clientFacing:true,  defGrat:20},
-  bus:        {label:'Bus / Motorcoach',clientFacing:true, defGrat:20}, // demand-multiplied hourly
-  vintage:    {label:'Vintage / Classic',clientFacing:true,defGrat:20}, // tiered first-hour + consecutive
-  otr:        {label:'Over-the-Road',   clientFacing:true, defGrat:20}, // multiday cost-up
-  greeter:    {label:'Greeter',        clientFacing:true,  defGrat:20}, // $50/hr, 3hr min, +20%
+  // Gratuity (Jeffrey, Nov 2, 2026; was 20% for everything): buses and motorcoaches 10%, everything else 15%.
+  // Same as the website engine (config.ts GRATUITY / BUS_GRATUITY).
+  fromairport:{label:'From Airport',   clientFacing:true,  defGrat:15},
+  toairport:  {label:'To Airport',     clientFacing:true,  defGrat:15},
+  p2p:        {label:'Point-to-Point', clientFacing:true,  defGrat:15},
+  hourly:     {label:'Hourly',         clientFacing:true,  defGrat:15},
+  bus:        {label:'Bus / Motorcoach',clientFacing:true, defGrat:10}, // demand-multiplied hourly
+  vintage:    {label:'Vintage / Classic',clientFacing:true,defGrat:15}, // tiered first-hour + consecutive
+  otr:        {label:'Over-the-Road',   clientFacing:true, defGrat:10}, // multiday cost-up (motorcoach)
+  greeter:    {label:'Greeter',        clientFacing:true,  defGrat:15}, // $50/hr, 3hr min, +15%
   standby:    {label:'Standby',        clientFacing:false, defGrat:0},  // internal — emergency backup chauffeur
   secondary:  {label:'Secondary Driver',clientFacing:false,defGrat:0}   // internal — OTR FMCSA relief (usually auto-generated)
 };
@@ -1885,7 +1887,7 @@ function otrBodyHTML(trip){
     +   '<div class="hint" style="margin-top:6px;">Origin is always the Hollywood yard (added automatically as the positioning leg — it counts as DUTY time, not just fuel). Fetching geocodes both addresses, fills round-trip miles, and seeds the feasibility timeline below with real drive hours (conservative/pessimistic traffic). Edit the seeded days to match the actual schedule.</div>'
     + '</div>'
     + (drivers>1 ? '<div class="row2" style="margin-top:10px;"><div><label style="margin-top:0;">Relief-driver positioning shuttle $</label><input type="number" data-f="otrReliefShuttle" value="'+trip.otrReliefShuttle+'" min="0"></div><div></div></div>' : '')
-    + '<div class="bus-rate">Est. cost-up base: <strong>$'+est.toFixed(2)+'</strong> <span class="bus-factors">(driver + fuel $'+fuel.toFixed(0)+' + lodging + per diem + vehicle day rate'+(drivers>1?' × '+drivers+' drivers':'')+')</span> — before 20% gratuity + 4% card</div>'
+    + '<div class="bus-rate">Est. cost-up base: <strong>$'+est.toFixed(2)+'</strong> <span class="bus-factors">(driver + fuel $'+fuel.toFixed(0)+' + lodging + per diem + vehicle day rate'+(drivers>1?' × '+drivers+' drivers':'')+')</span> — before 10% gratuity + 4% card</div>'
     + '<div class="hint">Second driver (relief) doubles driver/per-diem/lodging and adds a positioning shuttle. Used only when one-way driving exceeds a single FMCSA duty day and same-day arrival is required. Tolls/permits are pass-through (no markup).</div>'
     + otrPlannerHTML(trip);
 }
@@ -1927,7 +1929,7 @@ function otrPlannerHTML(trip){
       + '<div class="otr-opt-head">'+(o.legal?'✓':'✗')+' '+o.label+(rec?' <span class="rec-badge">recommended</span>':'')+(chosen?' <span class="rec-badge" style="background:#2f5d43;">✓ applied to quote</span>':'')+'</div>'
       + '<div class="otr-opt-meta">'+o.days+' days · '+o.overnights+' nights · '+o.drivers+' driver'+(o.drivers>1?'s':'')+(o.shuttle?' · +'+M(o.shuttle)+' shuttle':'')+'</div>'
       + '<div class="otr-opt-price">'+M(p.cardTotal)+' <span class="otr-ach">card · '+M(p.achTotal)+' ACH</span></div>'
-      + '<div class="otr-opt-note" style="opacity:.85;">Driver '+M(p.components.driver)+' · Fuel '+M(p.components.fuel)+' · Lodging '+M(p.components.lodging)+' · Per diem '+M(p.components.perdiem)+' · Vehicle '+M(p.components.vehicleDay)+(p.components.shuttle?' · <strong>Shuttle '+M(p.components.shuttle)+'</strong>':'')+' · +20% grat</div>'
+      + '<div class="otr-opt-note" style="opacity:.85;">Driver '+M(p.components.driver)+' · Fuel '+M(p.components.fuel)+' · Lodging '+M(p.components.lodging)+' · Per diem '+M(p.components.perdiem)+' · Vehicle '+M(p.components.vehicleDay)+(p.components.shuttle?' · <strong>Shuttle '+M(p.components.shuttle)+'</strong>':'')+' · +10% grat</div>'
       + '<div class="otr-opt-note">'+o.note+'</div>'
       + (o.legal&&!chosen ? '<button class="addbtn" type="button" data-otruse="'+o.key+'" style="margin-top:8px;">Use this option</button>' : '')
       + '</div>';
@@ -2029,7 +2031,7 @@ function vintageBodyHTML(trip){
     +   '<div><label style="margin-top:0;">Non-consecutive hrs (1h min/block)</label><input type="number" data-f="vintageNonconsecHrs" value="'+trip.vintageNonconsecHrs+'" min="0" step="0.5"></div>'
     + '</div>'
     + '<div class="bus-rate">'+v.name+': <strong>$'+v.first+'</strong> first hour · $'+VINTAGE_CONSEC_RATE+'/hr consecutive · $'+VINTAGE_NONCONSEC_RATE+'/hr non-consecutive · dead-head @ $'+VINTAGE_CONSEC_RATE+'/hr</div>'
-    + '<div class="hint">First service hour bills at the vehicle rate; additional consecutive hours at $'+VINTAGE_CONSEC_RATE+'; separate blocks (with a gap) at $'+VINTAGE_NONCONSEC_RATE+'. Dead-head is round-trip CHS with a 15-min-per-leg waiver, billed at the consecutive rate. Standard 20% gratuity + 4% card. Overtime past the booked end: $'+VINTAGE_CAR_OVERTIME+' per 15 min. Non-consecutive splitting will be auto-derived by the planner later.</div>';
+    + '<div class="hint">First service hour bills at the vehicle rate; additional consecutive hours at $'+VINTAGE_CONSEC_RATE+'; separate blocks (with a gap) at $'+VINTAGE_NONCONSEC_RATE+'. Dead-head is round-trip CHS with a 15-min-per-leg waiver, billed at the consecutive rate. Standard 15% gratuity + 4% card. Overtime past the booked end: $'+VINTAGE_CAR_OVERTIME+' per 15 min. Non-consecutive splitting will be auto-derived by the planner later.</div>';
 }
 
 function busTypeOpts(sel){ return Object.keys(BUSES).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+BUSES[k].name+'</option>').join(''); }
@@ -2127,7 +2129,7 @@ function busBodyHTML(trip){
     +   '</div>'
     + '</details>'
     + '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="busSpecialRoute"'+(trip.busSpecialRoute?' checked':'')+'><label>City approved a special route (time downtown legs by the normal route, not the approved bus streets)</label></div>'
-    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Standard 20% gratuity + 4% card apply. Kiawah gate $43 if applicable. Downtown bus permit $14 when a pickup, stop or drop-off is in the Old and Historic District; the city\'s approved bus streets show as planning time on the legs in and out (not billed). The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
+    + '<div class="hint">Committed hours = service + dead-head + any idle gap (buses bill the whole span). Rate floors at 70% of base. Bus gratuity is 10%; 4% card applies. Kiawah gate $43 if applicable. Downtown bus permit $14 when a pickup, stop or drop-off is in the Old and Historic District; the city\'s approved bus streets show as planning time on the legs in and out (not billed). The realistic-timeline planner (which derives committed hours) comes in the reshaping layer.</div>'
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '');
@@ -2172,7 +2174,7 @@ function tripBodyHTML(trip){
       +   '<div><label style="margin-top:0;">Greeting hours (active)</label><input type="number" data-f="hours" value="'+trip.hours+'" min="1" step="0.5"></div>'
       +   '<div><label style="margin-top:0;">Gratuity %</label><input type="number" data-f="gratuityPct" value="'+trip.gratuityPct+'" min="0" step="0.5"></div>'
       + '</div>'
-      + '<div class="hint">$50/hr, +20% gratuity. Enter the <strong>active greeting hours</strong>; a <strong>1-hour setup/prep hour is added automatically</strong> (arrive, get settled, message arriving guests and coordinating chauffeurs). 3-hour minimum is the floor. Offered when a client has several airport arrivals, or auto-added for meet-and-greets on larger-than-SUV vehicles.</div>';
+      + '<div class="hint">$50/hr, +15% gratuity. Enter the <strong>active greeting hours</strong>; a <strong>1-hour setup/prep hour is added automatically</strong> (arrive, get settled, message arriving guests and coordinating chauffeurs). 3-hour minimum is the floor. Offered when a client has several airport arrivals, or auto-added for meet-and-greets on larger-than-SUV vehicles.</div>';
     // k==='hourly' (standard) → fall through to the standard-fleet body below, with the selector prepended
     return sel + standardFleetBodyHTML(trip);
   }
