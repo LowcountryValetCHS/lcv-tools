@@ -245,7 +245,7 @@ const cents=n=>Math.round((n+Number.EPSILON)*100)/100;
 // RATE TABLES (ported verbatim from the working single-trip engine)
 // ============================================================================
 const STD={ sedan:{floor:120,r2:95,r4:95,name:'Luxury Sedan'}, fsuv:{floor:140,r2:120,r4:120,name:'Full Size SUV'},
-  vsuv:{floor:150,r2:130,r4:130,name:'VIP SUV'}, svan:{floor:220,r2:190,r4:175,name:'Sprinter Van'}, slimo:{floor:220,r2:190,r4:175,name:'Sprinter Limo'} }; // Sprinter Limo = Sprinter Van rates and floor (Jeffrey, Nov 2, 2026; was 300/200/185), matches website config.ts
+  vsuv:{floor:150,r2:130,r4:130,name:'VIP SUV'}, svan:{floor:220,r2:175,r4:160,name:'Sprinter Van'}, slimo:{floor:250,r2:175,r4:160,name:'Sprinter Limo'} }; // Sprinters (Jeffrey, Nov 2, 2026): 175 under 4 h, 160 from 4 h for both; floors 220 van, 250 limo. Matches website config.ts
 // Retail pricing uplift — experiment knob: standard-fleet retail rates & floors × this.
 // Reverted to 1.0 (Jul 2026): replaced by the pricing percentile + dead-head grace taper below.
 const RETAIL_UPLIFT=1.0;
