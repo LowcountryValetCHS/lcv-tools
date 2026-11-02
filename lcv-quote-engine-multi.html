@@ -244,8 +244,8 @@ const cents=n=>Math.round((n+Number.EPSILON)*100)/100;
 // ============================================================================
 // RATE TABLES (ported verbatim from the working single-trip engine)
 // ============================================================================
-const STD={ sedan:{floor:120,r2:95,r4:95,name:'Luxury Sedan'}, fsuv:{floor:140,r2:120,r4:120,name:'Full Size SUV'},
-  vsuv:{floor:150,r2:130,r4:130,name:'VIP SUV'}, svan:{floor:220,r2:175,r4:160,name:'Sprinter Van'}, slimo:{floor:250,r2:175,r4:160,name:'Sprinter Limo'} }; // Sprinters (Jeffrey, Nov 2, 2026): 175 under 4 h, 160 from 4 h for both; floors 220 van, 250 limo. Matches website config.ts
+const STD={ sedan:{floor:120,r2:95,r4:95,r10:85,name:'Luxury Sedan'}, fsuv:{floor:140,r2:120,r4:120,r10:105,name:'Full Size SUV'},
+  vsuv:{floor:150,r2:130,r4:130,r10:115,name:'VIP SUV'}, svan:{floor:220,r2:175,r4:160,r10:140,name:'Sprinter Van'}, slimo:{floor:250,r2:175,r4:160,r10:140,name:'Sprinter Limo'} }; // Sprinters (Jeffrey, Nov 2, 2026): 175 under 4 h, 160 from 4 h for both; floors 220 van, 250 limo. r10 = full-day rate from 10 billable hours, all standard vehicles (Nov 2, 2026). Matches website config.ts
 // Retail pricing uplift — experiment knob: standard-fleet retail rates & floors × this.
 // Reverted to 1.0 (Jul 2026): replaced by the pricing percentile + dead-head grace taper below.
 const RETAIL_UPLIFT=1.0;
@@ -890,7 +890,7 @@ function pricePartner(trip, k, partnerKey){
 }
 function vehLabel(v){ return STD[v]?STD[v].name:v; }
 
-function tierRate(veh,hrs){ return hrs>=4?STD[veh].r4:STD[veh].r2; }
+function tierRate(veh,hrs){ return hrs>=10?STD[veh].r10:hrs>=4?STD[veh].r4:STD[veh].r2; } // full-day tier from 10 billable hours (matches website engine.ts standardRate)
 function isAirportKind(kind){ return kind==='fromairport'||kind==='toairport'; }
 
 // §5.1 availability gate (matches website engine.ts availabilityGate + config.ts AVAILABILITY_GATE): in April, May and
