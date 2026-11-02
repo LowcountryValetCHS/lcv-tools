@@ -229,6 +229,8 @@
 <script>
 const $=id=>document.getElementById(id);
 const M=n=>'$'+Math.round(n).toLocaleString();
+// §3.5 money to cents: each base part and the base fare are rounded here (matches website engine.ts cents()).
+const cents=n=>Math.round((n+Number.EPSILON)*100)/100;
 
 // ============================================================================
 // DATA MODEL — a quote is a list of trips. This is the spine.
@@ -891,6 +893,24 @@ function vehLabel(v){ return STD[v]?STD[v].name:v; }
 function tierRate(veh,hrs){ return hrs>=4?STD[veh].r4:STD[veh].r2; }
 function isAirportKind(kind){ return kind==='fromairport'||kind==='toairport'; }
 
+// §5.1 availability gate (matches website engine.ts availabilityGate + config.ts AVAILABILITY_GATE): in April, May and
+// October a Saturday point-to-point picking up at 2:00 PM or later is hourly-only when booked more than 14 days ahead;
+// inside 14 days it opens back up (gap filling). Retail, standard fleet, non-airport P2P only. Booking date = today (Charleston).
+const AVAILABILITY_GATE={ peakMonths:[4,5,10], weekday:6 /* Saturday */, fromTime:'14:00', openWithinDays:14 };
+function todayCharleston(){ return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }
+function p2pGateClosed(dateStr, timeStr, bookedOn){
+  const d=/^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr||''), t=/^(\d{1,2}):(\d{2})/.exec(timeStr||'');
+  if(!d||!t) return false;
+  const svc=Date.UTC(+d[1],+d[2]-1,+d[3]);
+  if(!AVAILABILITY_GATE.peakMonths.includes(+d[2])) return false;
+  if(new Date(svc).getUTCDay()!==AVAILABILITY_GATE.weekday) return false;
+  const [fh,fm]=AVAILABILITY_GATE.fromTime.split(':').map(Number);
+  if((+t[1])*60+(+t[2]) < fh*60+fm) return false;
+  const b=/^(\d{4})-(\d{2})-(\d{2})$/.exec(bookedOn||'');
+  if(b && Math.round((svc-Date.UTC(+b[1],+b[2]-1,+b[3]))/86400000) <= AVAILABILITY_GATE.openWithinDays) return false;
+  return true;
+}
+
 // ----------------------------------------------------------------------------
 // priceTrip(trip) — PURE pricing for one trip.
 // Returns {base, lines[], note, holidayPct, holidayName, passthroughs[]}.
@@ -1017,28 +1037,30 @@ function priceTrip(trip){
     const v=VINTAGE[trip.vintageType]||VINTAGE.convertible;
     const svcHrs=Math.max(1, +trip.vintageServiceHrs||1);   // 1hr min
     // non-consecutive blocks floor at 1 hour each (a separate re-committed block), 0.5h increments above that
-    let nonconsecHrs=Math.max(0, +trip.vintageNonconsecHrs||0);
-    if(nonconsecHrs>0 && nonconsecHrs<1) nonconsecHrs=1; // 1h floor per block
+    // §10.2 (matches website engine.ts nonConsecutiveHours): each block bills at least 1 hour, then rounded UP to the
+    // half hour. The field holds one block. Consecutive hours subtract the block's actual (raw) length, as the website does.
+    const nonconsecRaw=Math.max(0, +trip.vintageNonconsecHrs||0);
+    const nonconsecHrs=nonconsecRaw>0 ? Math.max(1, Math.ceil(nonconsecRaw/0.5)*0.5) : 0;
     // consecutive service = first hour + remaining consecutive hours (minus any non-consecutive blocks)
-    const consecHrs=Math.max(0, svcHrs-1-nonconsecHrs);      // hours after the first, that are consecutive
+    const consecHrs=Math.max(0, svcHrs-1-nonconsecRaw);      // hours after the first, that are consecutive
     const deadheadHrs=v.noDeadhead ? 0 : Math.max(0, ((+trip.vintageDeadheadMin||0)-15)/60)*2; // round-trip, 15-min/leg waiver
-    let base=v.first;                                        // 1st service hour
+    let base=cents(v.first);                                 // 1st service hour (§10.5 Rolls 890×1.3 to cents, matches website engine.ts)
     const parts=['1st hr $'+(+v.first).toFixed(0)+(v.gratuityIncluded?' (gratuity incl.)':'')];
-    if(consecHrs>0){ base+=consecHrs*v.consec; parts.push(consecHrs.toFixed(1)+'h consec × $'+v.consec); }
-    if(nonconsecHrs>0){ base+=nonconsecHrs*v.nonconsec; parts.push(nonconsecHrs.toFixed(1)+'h non-consec × $'+v.nonconsec); }
-    if(deadheadHrs>0){ base+=deadheadHrs*VINTAGE_CONSEC_RATE; parts.push(deadheadHrs.toFixed(2)+'h dead-head × $'+VINTAGE_CONSEC_RATE); }
+    if(consecHrs>0){ base+=cents(consecHrs*v.consec); parts.push(consecHrs.toFixed(1)+'h consec × $'+v.consec); }
+    if(nonconsecHrs>0){ base+=cents(nonconsecHrs*v.nonconsec); parts.push(nonconsecHrs.toFixed(1)+'h non-consec × $'+v.nonconsec); }
+    if(deadheadHrs>0){ base+=cents(deadheadHrs*VINTAGE_CONSEC_RATE); parts.push(deadheadHrs.toFixed(2)+'h dead-head × $'+VINTAGE_CONSEC_RATE); }
     lines.push({lbl:v.name+' service', val:null, txt:svcHrs.toFixed(1)+'h'+(nonconsecHrs>0?' ('+nonconsecHrs.toFixed(1)+'h non-consec)':''), sub:true});
     lines.push({lbl:'Base ('+parts.join(' + ')+')', val:base});
     // late-night (in base, service revenue): only hours overlapping the 11:30pm–6:30am window
     const vLnHrs=lateNightHours(trip.time, svcHrs);
     if(vLnHrs>0){
-      const lh=Math.max(35, vLnHrs*35);
-      base+=lh;
+      const lh=cents(Math.max(35, vLnHrs*35));
+      base=cents(base+lh); // §3.5 base fare to cents (matches website engine.ts)
       lines.push({lbl:'Late-night surcharge ('+vLnHrs.toFixed(1)+'h in window × $35 · $35 min)', val:lh, sub:true});
     }
     const holidayName=holidayOf(trip.date, trip.time);
     const holidayPct = holidayName ? 0.30 : 0;
-    return {base, lines, note:v.name+' · '+svcHrs.toFixed(1)+'h', holidayPct, holidayName, passthroughs:[], noGratuity:!!v.gratuityIncluded};
+    return {base:cents(base) /* §3.5 base fare to cents, matches website engine.ts */, lines, note:v.name+' · '+svcHrs.toFixed(1)+'h', holidayPct, holidayName, passthroughs:[], noGratuity:!!v.gratuityIncluded};
   }
 
   // ---- BUS / MOTORCOACH: demand-multiplied hourly ----
@@ -1051,7 +1073,7 @@ function priceTrip(trip){
     // effective rate = base × season × day × time, floored at 70% of base
     let factor = BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time];
     factor = Math.max(factor, BUS_FLOOR);
-    const rate = b.base*factor;
+    const rate = Math.round((b.base*factor+Number.EPSILON)*100)/100; // §11.3 rate to cents (matches website engine.ts busRate cents())
     const minH = busMinHours(season, day, time);
     // With locations: committed = booked window + FULL yard dead-head legs (no grace —
     // buses bill the whole span). Without locations: entered hours = committed (legacy).
@@ -1070,7 +1092,7 @@ function priceTrip(trip){
       reqH += (legOut+legBack)/60;
     } else trip._busDh=null;
     const hrs = Math.max(minH, reqH);
-    const base = rate*hrs;
+    const base = cents(rate*hrs); // §3.5 base fare to cents (matches website engine.ts priceBus)
     if(trip._busDh) lines.push({lbl:'Yard dead-head: yard→pickup '+trip._busDh.legOut+'min + dropoff→yard '+trip._busDh.legBack+'min (billed in full — buses bill the whole span)', val:null, txt:'', sub:true});
     if(trip._busDh && (trip._busDh.addOut||trip._busDh.addBack)) lines.push({lbl:'Planning: approved bus streets downtown add '+(trip._busDh.addOut?Math.round(trip._busDh.addOut*10)/10+' min getting in (leave that much earlier)':'')+(trip._busDh.addOut&&trip._busDh.addBack?' and ':'')+(trip._busDh.addBack?Math.round(trip._busDh.addBack*10)/10+' min getting out':'')+' (city motorcoach routes; not billed)', val:null, txt:'', sub:true});
     else if(trip.busSpecialRoute) lines.push({lbl:'City approved a special route: downtown legs timed by the normal route', val:null, txt:'', sub:true});
@@ -1132,6 +1154,12 @@ function priceTrip(trip){
     ? ((+trip.driveDirectStd)+((+trip.driveDirectBusy||+trip.driveDirectStd)-(+trip.driveDirectStd))*P)
     : median;
   const waived=Math.max(0,dhMedian-DH_GRACE_MIN);
+  // §5.1 gate (matches website engine.ts priceTrip): a closed P2P is quoted as an hourly block = the priced drive rounded
+  // up to the half hour (2h minimum below), stops not billed, dead-head legs as above. The tool has no booked-hours field for P2P.
+  const gated = k==='p2p' && p2pGateClosed(trip.date, trip.time, todayCharleston());
+  const gateHrs = gated ? Math.ceil((median/60)*2)/2 : 0;
+  trip._p2pGate = gated ? {hours:gateHrs} : null;
+  const billedStops = gated ? [] : stops;
   let billHours;
   if(airport){
     billHours=(median/60)+(waived/60);                 // service drive out + waived dead-head back
@@ -1151,37 +1179,40 @@ function priceTrip(trip){
       billHours=(+trip.hours||0)+(waived/60)*2;        // fallback proxy when no locations set
       trip._hourlyDh=null;
     }
+  } else if(gated){ // §5.1: hourly block + round-trip waived dead-head (matches website engine.ts)
+    billHours=gateHrs+(waived/60)*2;
   } else { // p2p
     billHours=(median/60)+(waived/60)*2;               // service drive + round-trip waived dead-head
   }
-  if(stops.length){ billHours += stops.reduce((m,st)=>m+stopPlanMin(st),0)/60; } // planned stop time, at the time rate
+  if(billedStops.length){ billHours += billedStops.reduce((m,st)=>m+stopPlanMin(st),0)/60; } // planned stop time, at the time rate
   const rate=Math.round(tierRate(veh,billHours)*RETAIL_UPLIFT*100)/100;
   const floor=STD[veh]?Math.round(STD[veh].floor*RETAIL_UPLIFT*100)/100:0;
   const minHrs=airport?0.75:2;
   const billedHrs=Math.max(billHours,minHrs);
-  const timeCalc=billedHrs*rate;
+  const timeCalc=cents(billedHrs*rate); // §3.5 time charge to cents (matches website engine.ts priceStandard)
   let base=Math.max(floor,timeCalc);
   const usedFloor=floor>=timeCalc;
   if(k==='hourly' && trip._hourlyDh){
     const d=trip._hourlyDh;
     lines.push({lbl:'Dead-head: base→pickup '+d.legOut+'min + dropoff→base '+d.legBack+'min (15-min grace/leg → '+(d.wOut+d.wBack)+' min billed)', val:null, txt:'', sub:true});
   }
+  if(gated) lines.push({lbl:'Peak Saturday 2 PM+, booked 15+ days out: priced by the hour (§5.1) — '+gateHrs.toFixed(1)+'h block (drive rounded up to the half hour)'+(stops.length?', stops not billed':''), val:null, txt:'', sub:true});
   lines.push({lbl:'Billable hrs', val:null, txt:billHours.toFixed(2)+(billedHrs>billHours?' → '+billedHrs.toFixed(2)+' (min)':''), sub:true});
   lines.push({lbl:usedFloor?'Base (vehicle floor)':'Base ('+billedHrs.toFixed(2)+'h × $'+rate+')', val:base});
   // Stop line: the planned stop time is inside the billable hours above (no per-stop charge).
   // Past the plan, wait time bills after the trip at the wait rate.
-  if(stops.length){
+  if(billedStops.length){
     const planned=stops.map((st,si)=>'stop '+(si+1)+' '+stopPlanMin(st)+' min').join(', ');
     lines.push({lbl:'En-route stops: '+planned+' planned (in billable hrs; past the plan $'+(WAIT_RATE[veh]||30)+'/'+STOP_INCR_MIN+' min after the trip)', val:null, txt:stops.length+' stop'+(stops.length>1?'s':''), sub:true});
   }
 
   // ---- LATE-NIGHT (11:30pm–6:30am): $35/hr on SERVICE hours falling in the window. ----
   // Service revenue → IN base (gets gratuity). Only the portion overlapping the window is charged.
-  const svcHrsForLN = airport ? (median/60) : (k==='hourly' ? (+trip.hours||0) : (median/60));
+  const svcHrsForLN = airport ? (median/60) : (k==='hourly' ? (+trip.hours||0) : (gated ? gateHrs : median/60)); // §5.1: late night on the block (matches website engine.ts)
   const lnHrs = lateNightHours(trip.time, svcHrsForLN);
   if(lnHrs>0){
-    const lh=Math.max(35, lnHrs*35);
-    base+=lh;
+    const lh=cents(Math.max(35, lnHrs*35));
+    base=cents(base+lh); // §3.5 base fare to cents (matches website engine.ts)
     lines.push({lbl:'Late-night surcharge ('+lnHrs.toFixed(1)+'h in window × $35 · $35 min)', val:lh, sub:true});
   }
 
@@ -1202,7 +1233,7 @@ function priceTrip(trip){
   }
   { const cs=childSeatPass(trip); if(cs) passthroughs.push(cs); }
 
-  return {base, lines, note:(STD[veh]?STD[veh].name:veh)+' '+(airport?'airport':(k==='hourly'?'hourly':'P2P')), holidayPct, holidayName, passthroughs};
+  return {base, lines, note:(STD[veh]?STD[veh].name:veh)+' '+(airport?'airport':(k==='hourly'?'hourly':(gated?'P2P → hourly (§5.1)':'P2P'))), holidayPct, holidayName, passthroughs};
 }
 
 // Late-night window: 11:30pm–6:30am. Returns the number of SERVICE hours that fall
@@ -1707,15 +1738,15 @@ function computeTrip(trip){
   let grat, disc, gratPct, discPct;
   if(isPartner){
     gratPct=p.partnerGratPct||0; discPct=p.partnerDiscPct||0;
-    grat=base*(gratPct/100); disc=base*(discPct/100);
+    grat=cents(base*(gratPct/100)); disc=cents(base*(discPct/100)); // §3.5 to cents (matches website engine.ts)
   } else {
     // The Rolls-Royce price already includes gratuity (no gratuity line).
     gratPct=p.noGratuity ? 0 : trip.gratuityPct; discPct=trip.discountPct;
-    grat=base*(gratPct/100); disc=base*(discPct/100);
+    grat=cents(base*(gratPct/100)); disc=cents(base*(discPct/100)); // §3.5 to cents (matches website engine.ts)
   }
   trip._gratPct=gratPct; trip._discPct=discPct;
   // holiday — a % OF base, but added outside the gratuity basis (applies to partner rate too)
-  const holidayAmt = p.holidayPct>0 ? base*p.holidayPct : 0;
+  const holidayAmt = p.holidayPct>0 ? cents(base*p.holidayPct) : 0; // §6.1 to cents (matches website engine.ts)
   trip._holidayName=p.holidayName;
   trip._holidayAmt=holidayAmt;
   trip._holidayPct=p.holidayPct;
@@ -1724,7 +1755,7 @@ function computeTrip(trip){
   const manualPass=(trip.addons||[]);
   const allPass=[...autoPass,...manualPass];
   const passTotal=allPass.reduce((s,a)=>s+(+a.amount||0),0);
-  trip.subtotal=base+grat-disc+holidayAmt+passTotal;
+  trip.subtotal=cents(base+grat-disc+holidayAmt+passTotal); // §3.5 subtotal to cents (matches website engine.ts)
   trip._priceLines=p.lines;
   trip._grat=grat; trip._disc=disc;
   trip._passthroughs=allPass; trip._passTotal=passTotal;
@@ -2010,7 +2041,7 @@ function busEffRate(trip){
   const time   = trip.busTimeOv   || busTimeOf(trip.time);
   const b=BUSES[trip.busType]||BUSES.mc4957;
   const factor=Math.max(BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time], BUS_FLOOR);
-  return { rate:b.base*factor, minH:busMinHours(season,day,time), season, day, time, factor, base:b.base };
+  return { rate:Math.round((b.base*factor+Number.EPSILON)*100)/100 /* §11.3 to cents, matches website engine.ts busRate */, minH:busMinHours(season,day,time), season, day, time, factor, base:b.base };
 }
 // Generalized itinerary advice — hourly (STD tier, base-relative dh) and bus (demand rate,
 // yard-relative dh). Window audit + §11.8 gap-split on the largest wait, from real segments.
@@ -2235,6 +2266,7 @@ function standardFleetBodyHTML(trip){
     + (TRIPS.filter(x=>TRIP_TYPES[x.kind].clientFacing).length>=2
         ? '<div class="check" style="margin-top:8px;"><input type="checkbox" data-f="diffVehicle"'+(trip.diffVehicle?' checked':'')+'><label>Dedicated vehicle (not shared with other trips in this quote)</label></div>'
         : '')
+    + (k==='p2p' ? '<div class="hint" data-p2pgate="1" style="color:var(--alert);">'+p2pGateNote(trip)+'</div>' : '') // §5.1 note (matches website engine.ts gate)
     + '<div class="live-status" data-livestatus="1"></div>'
     + '<details class="drive-override"><summary>Drive times (override)</summary>'
     +   '<div class="row2" style="margin-top:8px;">'
@@ -2335,11 +2367,14 @@ function computeWrapper(){
   const cfTrips=TRIPS.filter(t=>t.clientFacing);
   const sumTrips=cfTrips.reduce((s,t)=>s+t.subtotal,0);
   const groupDiscPct=+($('groupDisc')?$('groupDisc').value:0)||0;
-  const groupDisc=sumTrips*(groupDiscPct/100);
-  const afterDisc=sumTrips-groupDisc;
   const payment=$('payment')?$('payment').value:'card';
-  const cardFee = payment==='card' ? afterDisc*(CARD_FEE_PCT/100) : 0;
-  const grand=afterDisc+cardFee;
+  // §3.5 / §14.4: card fee per trip on its (group-discounted) subtotal, to cents, then summed (matches website engine.ts,
+  // which prices each trip with its own processing line; with no group discount the totals are identical).
+  let groupDisc=0, cardFee=0;
+  cfTrips.forEach(t=>{ const d=cents(t.subtotal*(groupDiscPct/100)); groupDisc+=d; if(payment==='card') cardFee+=cents((t.subtotal-d)*(CARD_FEE_PCT/100)); });
+  groupDisc=cents(groupDisc); cardFee=cents(cardFee);
+  const afterDisc=cents(sumTrips-groupDisc);
+  const grand=cents(afterDisc+cardFee);
   return {cfTrips,sumTrips,groupDiscPct,groupDisc,afterDisc,payment,cardFee,grand};
 }
 
@@ -2651,6 +2686,11 @@ function refreshSubtotalUI(trip){
   if(!card) return;
   const sub=card.querySelector('.trip-subtotal .v');
   if(sub) sub.textContent = trip.clientFacing ? M(trip.subtotal) : '—';
+  const gateEl=card.querySelector('[data-p2pgate]'); if(gateEl) gateEl.innerHTML=p2pGateNote(trip); // §5.1 note stays current
+}
+// §5.1 visible note for a P2P priced by the hour (matches website engine.ts availability gate).
+function p2pGateNote(trip){
+  return trip._p2pGate ? 'Peak Saturday 2 PM+, booked 15+ days out: priced by the hour (§5.1) — '+trip._p2pGate.hours.toFixed(1)+'h block, 2h minimum'+((trip.stops||[]).length?', stops not billed':'')+'. Point-to-point isn\'t offered; book an hourly block covering the whole stay.' : '';
 }
 
 // delete + live-times button (delegated click)
@@ -3023,7 +3063,7 @@ $('tripList').addEventListener('input',e=>{
         const day=trip.busDayOv||(d?busDayOf(d.getDay()):'sat');
         const time=trip.busTimeOv||busTimeOf(trip.time);
         const b=BUSES[trip.busType]||BUSES.mc4957;
-        const rate=b.base*Math.max(BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time],BUS_FLOOR);
+        const rate=Math.round((b.base*Math.max(BUS_SEASON[season]*BUS_DAY[day]*BUS_TIME[time],BUS_FLOOR)+Number.EPSILON)*100)/100; // §11.3 to cents, matches website engine.ts busRate
         priceHoursFn=(hrs)=>rate*hrs; minH=busMinHours(season,day,time);
       } else {
         priceHoursFn=(hrs)=>Math.max(STD[trip.vehicle].floor, hrs*tierRate(trip.vehicle,hrs)); minH=2;
