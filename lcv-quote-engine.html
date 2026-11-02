@@ -745,12 +745,14 @@ function applyWrapper(base,route){
   let html='', trace='', grat=0,disc=0,fee=0,final=base;
   const card=$('payment').value==='card';
   if(route==='retail'||route==='aff_local'||route==='aff_nonlocal'){
-    grat=base*0.20;
+    // Gratuity (Nov 2, 2026; was 20%): buses 10%, everything else 15%, same as the multi-trip tool and the website.
+    const gratPct=isBus($('vehicle').value)?0.10:0.15;
+    grat=base*gratPct;
     if(route==='aff_local')disc=base*0.20;
     if(route==='aff_nonlocal')disc=base*0.10;
     final=base+grat-disc;
     if(card){fee=final*0.04;}
-    html+=line('Gratuity (20%)',M(grat));
+    html+=line('Gratuity ('+Math.round(gratPct*100)+'%)',M(grat));
     if(disc>0)html+=lineDisc('Affiliate discount',M(disc));
     if(card)html+=line('Card fee (4%)',M(fee));
     final=final+(card?fee:0);
